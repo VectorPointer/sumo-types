@@ -2,12 +2,20 @@
 name = "sumo-types"
 version = "0.1.0"
 edition = "2024"
+# 1.86, not 1.85 (what edition 2024 alone needs): `xsd-parser` pulls in the
+# `icu_*` crates as a build-dependency, and those require 1.86. A build
+# dependency still has to compile on the consumer's toolchain, so it sets
+# the floor just as a regular one would. Verified in CI.
+rust-version = "1.86"
+authors = ["Víctor Ariño Pellejero"]
 description = "Reads SUMO (Eclipse SUMO) .net.xml and .rou.xml files into well-typed Rust structs"
 keywords = ["sumo", "traffic", "simulation", "netconvert", "xml"]
 categories = ["parser-implementations", "science"]
-# Covers this crate's own code. The schemas under `xsd/` are redistributed
-# from Eclipse SUMO under EPL-2.0 and are *not* covered by it — see NOTICE.
-license = "MIT OR Apache-2.0"
+# `MIT OR Apache-2.0` covers this crate's own code; the `AND EPL-2.0` covers
+# the Eclipse SUMO schemas under `xsd/` that the package redistributes
+# verbatim (see NOTICE and LICENSE-EPL). The whole expression is what license
+# scanners read, so it has to describe the *tarball*, not just `src/`.
+license = "(MIT OR Apache-2.0) AND EPL-2.0"
 readme = "README.md"
 repository = "https://github.com/VectorPointer/sumo-types"
 documentation = "https://docs.rs/sumo-types"
@@ -26,10 +34,18 @@ include = [
     "xsd/types/route.xsd",    # routes
     "xsd/types/base.xsd",     # net + routes
     "README.md",
+    "CHANGELOG.md",
     "NOTICE",
     "LICENSE-APACHE",
     "LICENSE-MIT",
+    "LICENSE-EPL",             # covers the `xsd/` files above
 ]
+
+# docs.rs builds with default features unless told otherwise, which would
+# document `net` and silently omit `routes` — half the public API.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["net"]
@@ -48,4 +64,11 @@ xsd-parser-types = { version = "0.2.1", features = ["quick-xml"] }
 [build-dependencies]
 xsd-parser = "1.5.2"
 anyhow = "1.0.104"
+# Already a transitive dependency of `xsd-parser`, declared directly because
+# `SumoNaming` reimplements part of its default naming strategy (see build.rs).
 Inflector = "0.11.4"
+# xsd-parser emits the whole schema as one `TokenStream`; without these, it
+# lands in OUT_DIR as a single multi-megabyte line and every rustc diagnostic
+# pointing into `schema` is unreadable.
+prettyplease = "0.2"
+syn = { version = "2", features = ["full", "parsing"] }

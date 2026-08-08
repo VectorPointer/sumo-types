@@ -1,10 +1,11 @@
 //! Reading a `.net.xml` file into a [`Network`]: deserializes the input into
-//! layer 1 ([`crate::schema`]) and converts it to layer 2
+//! layer 1 (the private `schema` module) and converts it to layer 2
 //! ([`crate::domain`]) in one step, so consumers never have to name a
 //! generated schema type or depend on `xsd-parser-types` themselves.
 
 use super::domain::Network;
 use crate::schema;
+use crate::xml::{RootRecordingReader, ensure_root_is};
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -18,22 +19,37 @@ use xsd_parser_types::quick_xml::{DeserializeSync, IoReader};
 /// println!("{} edges", network.edges.len());
 /// # Ok::<(), anyhow::Error>(())
 /// ```
+///
+/// # Errors
+///
+/// Returns an error if `path` can't be opened, if the document isn't
+/// well-formed XML rooted at `<net>`, or if any of its attributes can't be
+/// interpreted (a malformed position, a boundary without 4 components, a
+/// non-finite coordinate, ...).
 pub fn read_network(path: &Path) -> Result<Network> {
-    let input_file =
-        File::open(path).with_context(|| format!("Could not open input file: {path:?}"))?;
+    let input_file = File::open(path)
+        .with_context(|| format!("Could not open input file: {}", path.display()))?;
 
     read_network_from(BufReader::new(input_file))
-        .with_context(|| format!("invalid SUMO network in {path:?}"))
+        .with_context(|| format!("invalid SUMO network in {}", path.display()))
 }
 
 /// Same as [`read_network`], for callers that already have the `.net.xml`
 /// bytes in hand (an in-memory buffer, a decompressed stream, ...) rather
 /// than a file on disk.
+///
+/// # Errors
+///
+/// Same as [`read_network`], minus the failure to open a file.
 pub fn read_network_from(source: impl BufRead) -> Result<Network> {
-    let mut reader = IoReader::new(source);
+    let mut reader = RootRecordingReader::new(IoReader::new(source));
 
     let net = schema::NetType::deserialize(&mut reader)
         .map_err(|error| anyhow::anyhow!("failed to parse SUMO network: {error}"))?;
+
+    // After deserializing, not before: the root name is only known once the
+    // reader has produced its first element event.
+    ensure_root_is(&reader, "net", "SUMO network")?;
 
     Network::try_from(net)
 }
@@ -41,7 +57,7 @@ pub fn read_network_from(source: impl BufRead) -> Result<Network> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{EdgeId, JunctionKind, LaneId};
+    use crate::domain::{EdgeId, JunctionKind, LaneId, Projection};
 
     /// Minimal `.net.xml`: one edge with one lane, joining two junctions,
     /// one of them traffic-light controlled with a two-phase program.
@@ -84,11 +100,36 @@ mod tests {
         assert_eq!(network.traffic_light_programs[0].phases, vec!["G", "r"]);
 
         assert_eq!(network.connections.len(), 1);
-        assert!(network.location.is_some());
+        assert_eq!(network.location.projection, Projection::None);
     }
 
     #[test]
     fn rejects_input_that_is_not_a_sumo_network() {
         assert!(read_network_from(b"<not-a-net/>".as_slice()).is_err());
+    }
+
+    #[test]
+    fn rejects_a_net_shaped_document_under_the_wrong_root() {
+        // xsd-parser generates deserializers for XSD *types*, not elements,
+        // so without the root-name check in `read_network_from` this parses
+        // happily into an empty `Network`.
+        let disguised = SAMPLE_NET
+            .replace("<net ", "<additional ")
+            .replace("</net>", "</additional>");
+
+        let error = read_network_from(disguised.as_bytes()).unwrap_err();
+        assert!(
+            error.to_string().contains("<additional>"),
+            "error should name the offending root element, got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_coordinates() {
+        let poisoned = SAMPLE_NET.replace(r#"netOffset="0.00,0.00""#, r#"netOffset="NaN,0.00""#);
+        assert!(read_network_from(poisoned.as_bytes()).is_err());
+
+        let poisoned = SAMPLE_NET.replace(r#"x="100.00""#, r#"x="inf""#);
+        assert!(read_network_from(poisoned.as_bytes()).is_err());
     }
 }

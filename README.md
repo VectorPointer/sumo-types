@@ -7,13 +7,26 @@ At the time of writing there is no other Rust crate that does this:
 a *running* simulation, and SUMO's own `sumolib` is Python. This crate fills
 the offline, file-reading gap.
 
-```rust
-let network = sumo_types::read_network(std::path::Path::new("city.net.xml"))?;
+```console
+$ cargo add sumo-types                        # `net` only (default)
+$ cargo add sumo-types --features routes      # `net` + `routes`
+```
 
-for junction in &network.junctions {
-    if junction.kind == sumo_types::domain::JunctionKind::TrafficLight {
-        println!("{} has {} incoming lanes", junction.id, junction.incoming_lanes.len());
+Requires Rust 1.86 or newer.
+
+```rust,no_run
+use sumo_types::domain::JunctionKind;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let network = sumo_types::read_network(std::path::Path::new("city.net.xml"))?;
+
+    for junction in &network.junctions {
+        if junction.kind == JunctionKind::TrafficLight {
+            println!("{} has {} incoming lanes", junction.id, junction.incoming_lanes.len());
+        }
     }
+
+    Ok(())
 }
 ```
 
@@ -26,12 +39,19 @@ SUMO has one file format per Cargo feature. Two are implemented:
 | `net` (default) | `.net.xml` (`netconvert` output) | `sumo_types::domain`, `sumo_types::read_network` |
 | `routes` | `.rou.xml` (traffic demand) | `sumo_types::routes` |
 
-```rust
-let routes = sumo_types::routes::read_routes(std::path::Path::new("city.rou.xml"))?;
-for vehicle in &routes.vehicles {
-    println!("{} departs at {:?}", vehicle.id, vehicle.depart);
+```rust,no_run
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let routes = sumo_types::routes::read_routes(std::path::Path::new("city.rou.xml"))?;
+    for vehicle in &routes.vehicles {
+        println!("{} departs at {:?}", vehicle.id, vehicle.depart);
+    }
+
+    Ok(())
 }
 ```
+
+Both examples above are compiled as doctests (see `ReadmeExamples` in
+`src/lib.rs`), so they can't drift from the real API.
 
 `net`'s API sits at the crate root (`sumo_types::domain::Network`,
 `sumo_types::read_network`) because it was this crate's first, only format,
@@ -68,9 +88,10 @@ Each format has 2 layers of types, and a conversion step between them. For
 ```
 
 - **`schema`** (layer 1; generated, see `build.rs`) — an almost literal
-  mirror of the SUMO XSDs. Not meant to be used directly. Shared by every
-  active feature: `schema::NetType` and `schema::RoutesType` live in the
-  same module when both `net` and `routes` are enabled.
+  mirror of the SUMO XSDs. **Private**, not just discouraged: see below.
+  Shared by every active feature, so `schema::NetType` and
+  `schema::RoutesType` live in the same module when both `net` and `routes`
+  are enabled.
 - **`schema_mapper`** (`src/net/schema_mapper.rs`, `src/routes/schema_mapper.rs`)
   — converts layer 1 into layer 2, interpreting SUMO's text-encoded
   positions, shapes, boundaries, unions, and enumerations along the way. For
@@ -86,6 +107,19 @@ Each format has 2 layers of types, and a conversion step between them. For
 format — deserializing into layer 1, then converting via `schema_mapper`
 into layer 2 — so consumers only ever see `domain` types, and never have to
 name a generated schema type or depend on `xsd-parser-types` themselves.
+
+Layer 1 being private is a deliberate semver decision, not tidiness. The
+generated types implement `xsd-parser-types`' traits (`WithDeserializer`,
+`DeserializeBytes`, ...) in 173 impls, so a public `schema` would put that
+crate into this one's public API — and since a trait is identified by the
+version of the crate defining it, `WithDeserializer` from 0.2 and from 0.3
+are different traits. Bumping the dependency would then break every
+consumer built on layer 1, forcing a breaking release over a change that
+has nothing to do with this crate's own API. Layer 2 never mentions
+`xsd-parser-types`, so keeping layer 1 private is what lets that dependency
+stay an implementation detail. (`uom` is the opposite case, and *is*
+re-exported: `domain::Lane::length` is a `Length`, so it is public API by
+design rather than by accident.)
 
 Because layer 1 is regenerated from the XSDs on every build, keeping up with
 a new SUMO release is usually a matter of dropping in the updated `xsd/`
@@ -127,12 +161,21 @@ both live in `types/base.xsd`, which 46 of the 75 vendored schemas include.
    `net`) or namespace it under its own module (like `routes`); the latter
    is simpler once more than one non-`net` format exists, since only one of
    them can occupy the crate root's `domain`/`read_*` names.
-4. Any crate-level (`//!`) doc examples that reference the new format's API
-   need `ignore` instead of `no_run` unless the format is a default feature
-   — those doc comments aren't attached to a single item, so they can't be
-   `#[cfg]`-gated, and have to compile under every feature combination.
-   Put the real, runnable example on the reader function's own doc comment
-   instead, where it's naturally gated by that format's feature.
+4. Have that reader call `xml::ensure_root_is` after deserializing.
+   xsd-parser generates deserializers for XSD *types*, not elements, so
+   nothing else checks the root element's name — and since most SUMO
+   schemas make their content optional, an unrelated document otherwise
+   parses into an empty, plausible-looking value instead of an error.
+5. Anything a crate-level (`//!`) doc comment mentions has to be written as
+   a plain code span, not an intra-doc link, and any example in one needs
+   `ignore` rather than `no_run` unless the format is a default feature.
+   Those comments aren't attached to a single item, so they can't be
+   `#[cfg]`-gated: they are rendered and compiled under *every* feature
+   combination, and a link to a feature-gated item is a broken link in each
+   build that doesn't enable it. Put the real, runnable example on the
+   reader function's own doc comment, where the feature gate applies
+   naturally, and let the README doctests (`ReadmeExamples` in `src/lib.rs`)
+   cover the cross-format story.
 
 Not every SUMO schema can be added this way, at least not with xsd-parser
 1.5.2: `additional_file.xsd` fails generation
@@ -158,7 +201,13 @@ format's feature.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option. The schemas under `xsd/` are
-third-party material redistributed from Eclipse SUMO under EPL-2.0, not
-covered by this crate's license — see [NOTICE](NOTICE).
+This crate's own code (`src/`, `build.rs`) is licensed under either of
+[Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
+at your option.
+
+The schemas under `xsd/` are third-party material redistributed verbatim
+from Eclipse SUMO under [EPL-2.0](LICENSE-EPL), and are *not* covered by
+that dual license — see [NOTICE](NOTICE). Because the published package
+contains both, its crates.io `license` field is the combined expression
+`(MIT OR Apache-2.0) AND EPL-2.0`, which is what license scanners need to
+see; it describes the tarball, not just the Rust source.

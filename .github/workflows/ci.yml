@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # Every valid feature combination. The empty one is deliberately
+      # excluded: with no format feature the crate has nothing to generate
+      # and `lib.rs` refuses to compile on purpose (see its `compile_error!`).
+      # `-D warnings` goes after `--`, not in RUSTFLAGS: RUSTFLAGS applies to
+      # dependencies too, and this crate's warning policy is not theirs.
+      - name: Clippy
+        run: |
+          for features in "" "--no-default-features --features routes" "--all-features"; do
+            echo "::group::clippy $features"
+            cargo clippy --all-targets $features -- -D warnings
+            echo "::endgroup::"
+          done
+
+      - name: Test
+        run: |
+          for features in "" "--no-default-features --features routes" "--all-features"; do
+            echo "::group::test $features"
+            cargo test $features
+            echo "::endgroup::"
+          done
+
+      # The empty feature set must fail, and must fail as an ordinary rustc
+      # error naming the missing feature — not as an opaque build-script
+      # failure. Regressing that is easy and silent.
+      - name: Reject the empty feature set with a real diagnostic
+        run: |
+          if cargo check --no-default-features 2>cargo-err.txt; then
+            echo "expected --no-default-features to fail, but it succeeded"
+            exit 1
+          fi
+          cat cargo-err.txt
+          grep -q "at least one format feature" cargo-err.txt
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Intra-doc links to feature-gated items break under any feature set
+      # that doesn't enable them, and the crate-level `//!` docs can't be
+      # `#[cfg]`-gated — so all three combinations have to be clean, not
+      # just the `--all-features` one docs.rs builds.
+      - name: Build docs under every feature combination
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          for features in "" "--no-default-features --features routes" "--all-features"; do
+            echo "::group::doc $features"
+            cargo doc --no-deps $features
+            echo "::endgroup::"
+          done
+
+  msrv:
+    name: MSRV (1.86)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-features
+
+  package:
+    name: cargo package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `cargo package` only verifies the default feature set, but `include`
+      # ships the schemas `routes` needs too — so build the packaged tarball
+      # with every feature on, which is what a consumer enabling `routes`
+      # from crates.io actually does.
+      - name: Package and build the tarball with all features
+        run: |
+          cargo package
+          cd target/package/sumo-types-*/
+          cargo build --all-features

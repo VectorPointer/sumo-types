@@ -22,6 +22,12 @@ secondary license option of GNU General Public License, version 2 or later
 
     https://www.eclipse.org/legal/epl-2.0/
 
+A verbatim copy of EPL-2.0 accompanies this distribution as LICENSE-EPL, as
+the license itself requires. The crate's `license` field in Cargo.toml is
+therefore `(MIT OR Apache-2.0) AND EPL-2.0`: the dual license covers the
+Rust source, the EPL-2.0 term covers the schemas, and the combination is
+what describes the package as actually distributed.
+
 The schemas are included because `build.rs` generates this crate's `schema`
 module from them at build time, so the crate cannot be built without them.
 Only the ones the implemented features (`net`, `routes`) actually need are

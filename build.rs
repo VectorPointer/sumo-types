@@ -1,15 +1,18 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use inflector::Inflector;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::sync::{Arc, atomic::AtomicUsize};
 use xsd_parser::{
+    Config, Ident2, Name, TypeIdent,
     config::Schema,
     generate,
-    models::{format_ident, format_unknown_variant, make_type_name, meta::MetaType, NameBuilder as DefaultNameBuilder},
+    models::{
+        NameBuilder as DefaultNameBuilder, format_ident, format_unknown_variant, make_type_name,
+        meta::MetaType,
+    },
     traits::{NameBuilder, Naming},
-    Config, Ident2, Name, TypeIdent,
 };
 
 const ORIGINAL_XSD_DIR: &str = "xsd";
@@ -43,12 +46,16 @@ const FEATURE_SCHEMAS: &[(&str, &str)] = &[("net", "net_file.xsd"), ("routes", "
 /// Cargo sets `CARGO_FEATURE_<NAME>` (uppercased, `-` -> `_`) for every
 /// enabled feature of the crate the build script belongs to.
 fn feature_enabled(name: &str) -> bool {
-    env::var(format!("CARGO_FEATURE_{}", name.to_uppercase().replace('-', "_"))).is_ok()
+    env::var(format!(
+        "CARGO_FEATURE_{}",
+        name.to_uppercase().replace('-', "_")
+    ))
+    .is_ok()
 }
 
 /// Some SUMO xsd files (types/base.xsd) declare DTD entity constants in
 /// their own <!DOCTYPE ...> (e.g. <!ENTITY FloatPattern "[-+]?...">) and use
-/// them inside xsd:pattern patterns (&FloatPattern;). The XML parser used by
+/// them inside `xsd:pattern` patterns (`&FloatPattern;`). The XML parser used by
 /// xsd-parser does not resolve the DOCTYPE's internal subset, so those
 /// references make parsing fail if left as-is.
 ///
@@ -97,7 +104,9 @@ fn resolve_entity_reference(segment: &str, entities: &[(&str, &str)]) -> String 
 
     let value = match name {
         "amp" | "lt" | "gt" | "apos" | "quot" => return format!("&{name};{rest}"),
-        _ => entities.iter().find_map(|(n, v)| (*n == name).then_some(*v)),
+        _ => entities
+            .iter()
+            .find_map(|(n, v)| (*n == name).then_some(*v)),
     };
 
     match value {
@@ -160,7 +169,7 @@ fn copy_and_patch_schemas(src: &Path, dst: &Path) -> Result<()> {
 
 /// Naming strategy passed to xsd-parser (`Config::with_naming`) for
 /// types/modules/fields/constants: identical to the default one (unifies to
-/// PascalCase/snake_case/SCREAMING_SNAKE_CASE), but with
+/// `PascalCase`/`snake_case`/`SCREAMING_SNAKE_CASE`), but with
 /// [`format_variant_name`] replaced by a version that doesn't lose
 /// information (see its documentation).
 ///
@@ -176,7 +185,10 @@ impl Naming for SumoNaming {
     }
 
     fn builder(&self) -> Box<dyn NameBuilder> {
-        Box::new(DefaultNameBuilder::new(self.0.clone(), Box::new(self.clone())))
+        Box::new(DefaultNameBuilder::new(
+            self.0.clone(),
+            Box::new(self.clone()),
+        ))
     }
 
     fn unify(&self, s: &str) -> String {
@@ -212,7 +224,7 @@ impl Naming for SumoNaming {
     }
 }
 
-/// Faithful copy of the PascalCase normalization used by xsd-parser's
+/// Faithful copy of the `PascalCase` normalization used by xsd-parser's
 /// default `Naming` for types/modules/fields/constants (its real
 /// implementation, `unify_string`, is not public).
 fn unify(s: &str) -> String {
@@ -237,9 +249,9 @@ fn unify(s: &str) -> String {
 
 /// Builds an enum variant name from the XSD value `s`.
 ///
-/// xsd-parser's default `Naming` unifies everything to PascalCase, which is
+/// xsd-parser's default `Naming` unifies everything to `PascalCase`, which is
 /// case-insensitive: XSD values that only differ by case (e.g. the
-/// single-character codes net_file.xsd uses for `state="M"/"m"` or
+/// single-character codes `net_file.xsd` uses for `state="M"/"m"` or
 /// `dir="s"/"t"/"T"`, or "true"/"True" in `boolType`) collapse into the same
 /// Rust identifier, which xsd-parser neither detects nor disambiguates
 /// (duplicate enum variants -> compile error).
@@ -280,15 +292,30 @@ fn describe_symbol(c: char) -> String {
     }
 }
 
+/// Formats the generated code so that rustc diagnostics pointing into
+/// `schema` have real line numbers to point at: xsd-parser hands back a
+/// `TokenStream`, whose `to_string()` is a single multi-megabyte line.
+///
+/// Falls back to the unformatted source rather than failing the build — a
+/// pretty-printing problem is a readability problem, not a correctness one,
+/// and `syn` failing to re-parse xsd-parser's own output would be its bug,
+/// not something a consumer of this crate can act on.
+fn pretty_print(code: &str) -> String {
+    match syn::parse_file(code) {
+        Ok(parsed) => prettyplease::unparse(&parsed),
+        Err(error) => {
+            println!("cargo:warning=could not pretty-print the generated schema: {error}");
+            code.to_string()
+        }
+    }
+}
+
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed={ORIGINAL_XSD_DIR}");
 
     let out_dir =
         PathBuf::from(env::var("OUT_DIR").context("OUT_DIR environment variable is not set")?);
-    let patched_xsd_dir = out_dir.join("patched_xsd");
-
-    copy_and_patch_schemas(Path::new(ORIGINAL_XSD_DIR), &patched_xsd_dir)
-        .context("Failed to patch and copy XSD schemas")?;
+    let dest_path = out_dir.join(OUTPUT_FILE_NAME);
 
     let active_schemas: Vec<&str> = FEATURE_SCHEMAS
         .iter()
@@ -296,12 +323,19 @@ fn main() -> Result<()> {
         .map(|(_, xsd)| *xsd)
         .collect();
 
+    // With no format feature there is no schema to generate, but failing
+    // here would surface as an opaque "custom build command failed". Write
+    // an empty module instead and let the `compile_error!` in `lib.rs`
+    // report it as an ordinary rustc diagnostic naming the missing feature.
     if active_schemas.is_empty() {
-        bail!(
-            "sumo-types needs at least one format feature enabled (e.g. `net`) \
-             to generate anything from OUT_DIR/{OUTPUT_FILE_NAME}"
-        );
+        fs::write(&dest_path, "")
+            .with_context(|| format!("Failed to write empty schema to {}", dest_path.display()))?;
+        return Ok(());
     }
+
+    let patched_xsd_dir = out_dir.join("patched_xsd");
+    copy_and_patch_schemas(Path::new(ORIGINAL_XSD_DIR), &patched_xsd_dir)
+        .context("Failed to patch and copy XSD schemas")?;
 
     let mut config = Config::default()
         .with_naming(SumoNaming::default())
@@ -314,8 +348,7 @@ fn main() -> Result<()> {
     let code = generate(config)
         .map_err(|e| anyhow::anyhow!("Error generating code from XSD schema: {e:?}"))?;
 
-    let dest_path = out_dir.join(OUTPUT_FILE_NAME);
-    fs::write(&dest_path, code.to_string())
+    fs::write(&dest_path, pretty_print(&code.to_string()))
         .with_context(|| format!("Failed to write generated file to {}", dest_path.display()))?;
 
     Ok(())

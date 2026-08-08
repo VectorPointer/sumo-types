@@ -1,9 +1,13 @@
 //! Layer 2 for `routes`: this crate's own domain types for `.rou.xml`.
 //!
-//! Independent of SUMO/XSD, same rationale as [`crate::domain`] for `net`
+//! Independent of SUMO/XSD, same rationale as `net`'s own `crate::domain`
 //! (see the crate docs) — and independent of `net`'s own domain types too,
 //! by design: `routes` doesn't require `net` to be enabled, so it can't
-//! borrow [`crate::domain::EdgeId`] and defines its own [`EdgeRef`] instead.
+//! borrow `crate::domain::EdgeId` and defines its own [`EdgeRef`] instead.
+//!
+//! Those cross-format names are code spans, not intra-doc links: `net` may
+//! not be enabled, and a link to a feature-gated item is a broken link in
+//! every build that leaves that feature off.
 //!
 //! Only the building blocks of a traffic demand file are modeled:
 //! [`Route`], [`VehicleType`], and [`Vehicle`]. `routesType` also allows
@@ -16,7 +20,7 @@ use derive_more::{AsRef, Display, From};
 use uom::si::f64::{Length, Time, Velocity};
 
 /// Identifier of a [`Route`]. A distinct type from a bare `String`, same
-/// rationale as [`crate::domain::EdgeId`].
+/// rationale as `net`'s `crate::domain::EdgeId`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, AsRef)]
 pub struct RouteId(#[as_ref(forward)] pub String);
 
@@ -31,7 +35,7 @@ pub struct VehicleTypeId(#[as_ref(forward)] pub String);
 pub struct VehicleId(#[as_ref(forward)] pub String);
 
 /// Identifier of an edge in the `.net.xml` a route file's [`Route::edges`]
-/// refer to. Deliberately not [`crate::domain::EdgeId`] — see the module
+/// refer to. Deliberately not `crate::domain::EdgeId` — see the module
 /// docs for why. If both `net` and `routes` are enabled and describe the
 /// same network, the two id newtypes carry the same string ids but aren't
 /// the same Rust type, so they can't be mixed up by accident.
@@ -47,7 +51,12 @@ pub struct EdgeRef(#[as_ref(forward)] pub String);
 pub enum Color {
     /// Each component in `0.0..=1.0`, parsed from `"r,g,b"` or `"r,g,b,a"`
     /// (`a` defaults to `1.0` when omitted).
-    Rgba { r: f64, g: f64, b: f64, a: f64 },
+    Rgba {
+        r: f64,
+        g: f64,
+        b: f64,
+        a: f64,
+    },
     Named(NamedColor),
 }
 

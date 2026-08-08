@@ -1,10 +1,11 @@
 //! Reading a `.rou.xml` file into [`Routes`]: deserializes the input into
-//! layer 1 ([`crate::schema`]) and converts it to layer 2
+//! layer 1 (the private `schema` module) and converts it to layer 2
 //! ([`crate::routes::domain`]) in one step, mirroring
-//! [`crate::net::reader`].
+//! `net`'s own `reader`.
 
 use super::domain::Routes;
 use crate::schema;
+use crate::xml::{RootRecordingReader, ensure_root_is};
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -12,22 +13,36 @@ use std::path::Path;
 use xsd_parser_types::quick_xml::{DeserializeSync, IoReader};
 
 /// Reads and deserializes the `.rou.xml` file at `path` into [`Routes`].
+///
+/// # Errors
+///
+/// Returns an error if `path` can't be opened, if the document isn't
+/// well-formed XML rooted at `<routes>`, or if any of its attributes can't
+/// be interpreted (a malformed color, an unparseable departure time, ...).
 pub fn read_routes(path: &Path) -> Result<Routes> {
-    let input_file =
-        File::open(path).with_context(|| format!("Could not open input file: {path:?}"))?;
+    let input_file = File::open(path)
+        .with_context(|| format!("Could not open input file: {}", path.display()))?;
 
     read_routes_from(BufReader::new(input_file))
-        .with_context(|| format!("invalid SUMO route file in {path:?}"))
+        .with_context(|| format!("invalid SUMO route file in {}", path.display()))
 }
 
 /// Same as [`read_routes`], for callers that already have the `.rou.xml`
 /// bytes in hand (an in-memory buffer, a decompressed stream, ...) rather
 /// than a file on disk.
+///
+/// # Errors
+///
+/// Same as [`read_routes`], minus the failure to open a file.
 pub fn read_routes_from(source: impl BufRead) -> Result<Routes> {
-    let mut reader = IoReader::new(source);
+    let mut reader = RootRecordingReader::new(IoReader::new(source));
 
     let routes = schema::RoutesType::deserialize(&mut reader)
         .map_err(|error| anyhow::anyhow!("failed to parse SUMO route file: {error}"))?;
+
+    // `routesType`'s content is entirely optional, so without this check any
+    // document at all would parse as an empty `Routes` (see the tests).
+    ensure_root_is(&reader, "routes", "SUMO route file")?;
 
     Routes::try_from(routes)
 }
@@ -61,25 +76,40 @@ mod tests {
 
         assert_eq!(routes.vehicles.len(), 1);
         assert_eq!(routes.vehicles[0].id, VehicleId("v0".into()));
-        assert_eq!(routes.vehicles[0].vehicle_type, Some(VehicleTypeId("car".into())));
+        assert_eq!(
+            routes.vehicles[0].vehicle_type,
+            Some(VehicleTypeId("car".into()))
+        );
         assert_eq!(routes.vehicles[0].route, Some(RouteId("r0".into())));
         assert!(matches!(routes.vehicles[0].depart, Depart::Time(_)));
     }
 
     #[test]
-    fn ignores_unrelated_root_elements() {
+    fn rejects_unrelated_root_elements() {
         // `routesType`'s content is entirely optional (every element in its
         // `xsd:choice` has `minOccurs="0"`), so unlike `net`'s `NetType`
-        // (which requires `<location>`), there's no required field for a
-        // completely unrelated document to fail on — it just parses as
-        // empty. This documents that permissiveness rather than asserting
-        // a rejection that wouldn't actually happen.
-        let routes = read_routes_from(b"<not-routes/>".as_slice()).unwrap();
+        // (which requires `<location>`), no required field would make an
+        // unrelated document fail — it would parse as an empty `Routes`.
+        // The root-name check in `read_routes_from` is the only thing
+        // standing between a typo'd input and a silent empty result.
+        let error = read_routes_from(b"<not-routes/>".as_slice()).unwrap_err();
+        assert!(
+            error.to_string().contains("<not-routes>"),
+            "error should name the offending root element, got: {error}"
+        );
+    }
+
+    #[test]
+    fn accepts_an_empty_but_correctly_rooted_route_file() {
+        let routes = read_routes_from(b"<routes/>".as_slice()).unwrap();
         assert_eq!(routes, Routes::default());
     }
 
     #[test]
     fn rejects_a_vehicle_type_missing_its_required_id() {
-        assert!(read_routes_from(br#"<routes><vType vClass="passenger"/></routes>"#.as_slice()).is_err());
+        assert!(
+            read_routes_from(br#"<routes><vType vClass="passenger"/></routes>"#.as_slice())
+                .is_err()
+        );
     }
 }

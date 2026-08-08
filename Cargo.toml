@@ -1,31 +1,43 @@
 [package]
-name = "sumo-net"
+name = "sumo-types"
 version = "0.1.0"
 edition = "2024"
-description = "Reads SUMO (Eclipse SUMO) .net.xml road networks into well-typed Rust structs"
+description = "Reads SUMO (Eclipse SUMO) .net.xml and .rou.xml files into well-typed Rust structs"
 keywords = ["sumo", "traffic", "simulation", "netconvert", "xml"]
 categories = ["parser-implementations", "science"]
 # Covers this crate's own code. The schemas under `xsd/` are redistributed
 # from Eclipse SUMO under EPL-2.0 and are *not* covered by it — see NOTICE.
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-# Only the 3 schemas `net_file.xsd` actually pulls in are published. The
-# other 72 under `xsd/` describe unrelated SUMO file formats (routes,
-# detectors, tool configurations, ...) that nothing here reads, and
-# publishing them would mean redistributing 635 KB of Eclipse SUMO's EPL-2.0
-# files for nothing. They stay in the repository so adding a reader for
-# another format later doesn't mean re-vendoring them.
+repository = "https://github.com/VectorPointer/sumo-types"
+documentation = "https://docs.rs/sumo-types"
+# Only the schemas the implemented features need are published. The other
+# 70 under `xsd/` describe unrelated SUMO file formats (detectors, tool
+# configurations, ...) that nothing here reads, and publishing them would
+# mean redistributing hundreds of KB of Eclipse SUMO's EPL-2.0 files for
+# nothing. They stay in the repository so adding a reader for another
+# format later doesn't mean re-vendoring them.
 include = [
     "src/**/*.rs",
     "build.rs",
-    "xsd/net_file.xsd",
-    "xsd/types/base.xsd",
-    "xsd/types/taz.xsd",
+    "xsd/net_file.xsd",       # net
+    "xsd/types/taz.xsd",      # net
+    "xsd/routes_file.xsd",    # routes
+    "xsd/types/route.xsd",    # routes
+    "xsd/types/base.xsd",     # net + routes
     "README.md",
     "NOTICE",
     "LICENSE-APACHE",
     "LICENSE-MIT",
 ]
+
+[features]
+default = ["net"]
+# Reads `.net.xml` (`netconvert` output) into `Network`/`Edge`/`Lane`/...
+net = []
+# Reads `.rou.xml` (traffic demand: routes, vehicle types, vehicles) into
+# `routes::Routes`. Independent of `net` — it does not require it enabled.
+routes = []
 
 [dependencies]
 anyhow = "1.0.104"

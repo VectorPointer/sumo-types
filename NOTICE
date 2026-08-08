@@ -1,5 +1,5 @@
-sumo-net
-========
+sumo-types
+==========
 
 The Rust source code in this crate (`src/`, `build.rs`) is licensed under
 either of Apache License, Version 2.0 (LICENSE-APACHE) or MIT license
@@ -24,8 +24,9 @@ secondary license option of GNU General Public License, version 2 or later
 
 The schemas are included because `build.rs` generates this crate's `schema`
 module from them at build time, so the crate cannot be built without them.
-Only the three actually needed for that are published (`net_file.xsd`,
-`types/base.xsd`, `types/taz.xsd`); the repository keeps the full set.
+Only the ones the implemented features (`net`, `routes`) actually need are
+published (`net_file.xsd`, `routes_file.xsd`, `types/base.xsd`,
+`types/route.xsd`, `types/taz.xsd`); the repository keeps the full set.
 
 They are not modified here; `build.rs` patches its own copies under
 `OUT_DIR` at build time, leaving the originals untouched.

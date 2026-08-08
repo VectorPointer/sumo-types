@@ -9,7 +9,7 @@
 //! restricts with a text pattern (positions, shapes, boundaries), into the
 //! well-typed, project-owned types in `domain`.
 
-use crate::domain::{
+use super::domain::{
     default_lane_end_offset, default_lane_width, Boundary, Connection, ConnectionDirection, Edge,
     EdgeFunction, EdgeId, Junction, JunctionId, JunctionKind, Lane, LaneId, LaneIndex, LinkIndex,
     LinkState, Location, Network, Point, Priority, Projection, Roundabout, Shape, SpreadType,

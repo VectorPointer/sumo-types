@@ -3,7 +3,7 @@
 //! ([`crate::domain`]) in one step, so consumers never have to name a
 //! generated schema type or depend on `xsd-parser-types` themselves.
 
-use crate::domain::Network;
+use super::domain::Network;
 use crate::schema;
 use anyhow::{Context, Result};
 use std::fs::File;
@@ -12,6 +12,12 @@ use std::path::Path;
 use xsd_parser_types::quick_xml::{DeserializeSync, IoReader};
 
 /// Reads and deserializes the `.net.xml` file at `path` into a [`Network`].
+///
+/// ```no_run
+/// let network = sumo_types::read_network(std::path::Path::new("city.net.xml"))?;
+/// println!("{} edges", network.edges.len());
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub fn read_network(path: &Path) -> Result<Network> {
     let input_file =
         File::open(path).with_context(|| format!("Could not open input file: {path:?}"))?;

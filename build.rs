@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use inflector::Inflector;
 use std::env;
 use std::fs;
@@ -13,8 +13,38 @@ use xsd_parser::{
 };
 
 const ORIGINAL_XSD_DIR: &str = "xsd";
-const MAIN_SCHEMA_FILE: &str = "net_file.xsd";
 const OUTPUT_FILE_NAME: &str = "generated_schema.rs";
+
+/// Maps each of this crate's `[features]` (see `Cargo.toml`) to the XSD its
+/// reader is generated from. Adding a new SUMO file format is meant to be
+/// mostly a matter of adding an entry here, a matching feature, and that
+/// format's own `domain`/`schema_mapper` module — the XSD patching below and
+/// the `SumoNaming` strategy are already format-agnostic.
+///
+/// Every active feature's schema is generated in a single `generate()` call
+/// (see `main`), not one call per feature: `xsd-parser` scopes type
+/// resolution per call, so generating separately would give each format its
+/// own incompatible copy of the primitives common schemas like
+/// `types/base.xsd` define (`positionType`, `boolType`, ...) instead of one
+/// shared `schema` module.
+///
+/// Not every SUMO schema can be added this way, at least not as-is: e.g.
+/// `additional_file.xsd` fails generation (`UnknownType(fileOptionType)`)
+/// because its include graph reaches `types/base.xsd` via three different
+/// paths (directly, and via `types/route.xsd` and `types/taz.xsd`), and
+/// xsd-parser 1.5.2 does not resolve that diamond correctly — confirmed by
+/// generating `types/base.xsd` and the file that needs it as the only two
+/// schema roots, which still fails the same way. `net_file.xsd` and
+/// `routes_file.xsd` each avoid this because they only reach `base.xsd` by
+/// a single path (through `types/taz.xsd` and `types/route.xsd`
+/// respectively).
+const FEATURE_SCHEMAS: &[(&str, &str)] = &[("net", "net_file.xsd"), ("routes", "routes_file.xsd")];
+
+/// Cargo sets `CARGO_FEATURE_<NAME>` (uppercased, `-` -> `_`) for every
+/// enabled feature of the crate the build script belongs to.
+fn feature_enabled(name: &str) -> bool {
+    env::var(format!("CARGO_FEATURE_{}", name.to_uppercase().replace('-', "_"))).is_ok()
+}
 
 /// Some SUMO xsd files (types/base.xsd) declare DTD entity constants in
 /// their own <!DOCTYPE ...> (e.g. <!ENTITY FloatPattern "[-+]?...">) and use
@@ -260,10 +290,26 @@ fn main() -> Result<()> {
     copy_and_patch_schemas(Path::new(ORIGINAL_XSD_DIR), &patched_xsd_dir)
         .context("Failed to patch and copy XSD schemas")?;
 
+    let active_schemas: Vec<&str> = FEATURE_SCHEMAS
+        .iter()
+        .filter(|(feature, _)| feature_enabled(feature))
+        .map(|(_, xsd)| *xsd)
+        .collect();
+
+    if active_schemas.is_empty() {
+        bail!(
+            "sumo-types needs at least one format feature enabled (e.g. `net`) \
+             to generate anything from OUT_DIR/{OUTPUT_FILE_NAME}"
+        );
+    }
+
     let mut config = Config::default()
         .with_naming(SumoNaming::default())
         .with_quick_xml_deserialize();
-    config.parser.schemas = vec![Schema::File(patched_xsd_dir.join(MAIN_SCHEMA_FILE))];
+    config.parser.schemas = active_schemas
+        .iter()
+        .map(|xsd| Schema::File(patched_xsd_dir.join(xsd)))
+        .collect();
 
     let code = generate(config)
         .map_err(|e| anyhow::anyhow!("Error generating code from XSD schema: {e:?}"))?;

@@ -1,0 +1,39 @@
+[package]
+name = "sumo-net"
+version = "0.1.0"
+edition = "2024"
+description = "Reads SUMO (Eclipse SUMO) .net.xml road networks into well-typed Rust structs"
+keywords = ["sumo", "traffic", "simulation", "netconvert", "xml"]
+categories = ["parser-implementations", "science"]
+# Covers this crate's own code. The schemas under `xsd/` are redistributed
+# from Eclipse SUMO under EPL-2.0 and are *not* covered by it — see NOTICE.
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+# Only the 3 schemas `net_file.xsd` actually pulls in are published. The
+# other 72 under `xsd/` describe unrelated SUMO file formats (routes,
+# detectors, tool configurations, ...) that nothing here reads, and
+# publishing them would mean redistributing 635 KB of Eclipse SUMO's EPL-2.0
+# files for nothing. They stay in the repository so adding a reader for
+# another format later doesn't mean re-vendoring them.
+include = [
+    "src/**/*.rs",
+    "build.rs",
+    "xsd/net_file.xsd",
+    "xsd/types/base.xsd",
+    "xsd/types/taz.xsd",
+    "README.md",
+    "NOTICE",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+]
+
+[dependencies]
+anyhow = "1.0.104"
+derive_more = { version = "2.1.1", features = ["display", "from", "as_ref"] }
+uom = "0.38.0"
+xsd-parser-types = { version = "0.2.1", features = ["quick-xml"] }
+
+[build-dependencies]
+xsd-parser = "1.5.2"
+anyhow = "1.0.104"
+Inflector = "0.11.4"

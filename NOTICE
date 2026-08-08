@@ -1,0 +1,34 @@
+sumo-net
+========
+
+The Rust source code in this crate (`src/`, `build.rs`) is licensed under
+either of Apache License, Version 2.0 (LICENSE-APACHE) or MIT license
+(LICENSE-MIT) at your option.
+
+
+Third-party material bundled in this crate
+------------------------------------------
+
+Everything under `xsd/` is NOT part of this crate's own source. Those XML
+Schema files are redistributed verbatim from the Eclipse SUMO project:
+
+    Eclipse SUMO — Simulation of Urban MObility
+    https://github.com/eclipse-sumo/sumo
+    Copyright (c) German Aerospace Center (DLR) and others
+
+They are licensed under the Eclipse Public License 2.0 (EPL-2.0), with a
+secondary license option of GNU General Public License, version 2 or later
+(GPL-2.0-or-later), as stated by the Eclipse SUMO project:
+
+    https://www.eclipse.org/legal/epl-2.0/
+
+The schemas are included because `build.rs` generates this crate's `schema`
+module from them at build time, so the crate cannot be built without them.
+Only the three actually needed for that are published (`net_file.xsd`,
+`types/base.xsd`, `types/taz.xsd`); the repository keeps the full set.
+
+They are not modified here; `build.rs` patches its own copies under
+`OUT_DIR` at build time, leaving the originals untouched.
+
+Redistributing them here does not place them under this crate's MIT/Apache
+terms. Any use of the files under `xsd/` remains governed by EPL-2.0.

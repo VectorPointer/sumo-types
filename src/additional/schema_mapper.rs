@@ -104,12 +104,31 @@ impl TryFrom<schema::E1DetectorType> for E1Detector {
     }
 }
 
-/// `lane` and `lanes` are alternatives. SUMO rejects a detector that sets
-/// both, so this does too rather than silently picking one.
-fn lane_coverage(lane: Option<String>, lanes: Option<&str>) -> Result<Option<LaneCoverage>> {
+/// Resolves `e2Detector`'s `lane` / `lanes` / `length` trio, rejecting the
+/// two combinations SUMO itself rejects.
+///
+/// Per SUMO's documentation for `lanes`: *"This argument excludes the
+/// arguments lane and length."* So `lanes` is exclusive with both of the
+/// others, while `lane` + `length` is the normal single-anchor form.
+///
+/// This is input validation, not an invariant of [`LaneCoverage`]: a
+/// malformed document should fail here, at the parse boundary, the same way
+/// a `NaN` position or a wrong root element does. Folding `length` into the
+/// `SingleLane` variant to make the bad state unrepresentable was
+/// considered and rejected — `length` can legally appear with neither
+/// attribute set, and it would have had nowhere to live, turning a visible
+/// error into silent data loss.
+fn lane_coverage(
+    lane: Option<String>,
+    lanes: Option<&str>,
+    length: Option<&str>,
+) -> Result<Option<LaneCoverage>> {
     match (lane, lanes) {
         (Some(_), Some(_)) => {
             bail!("e2Detector sets both `lane` and `lanes`; they are alternatives")
+        }
+        (_, Some(_)) if length.is_some() => {
+            bail!("e2Detector sets both `lanes` and `length`; SUMO's `lanes` excludes `length`")
         }
         (Some(lane), None) => Ok(Some(LaneCoverage::SingleLane(LaneRef(lane)))),
         (None, Some(lanes)) => Ok(Some(LaneCoverage::LaneChain(split_ids(lanes)))),
@@ -123,7 +142,7 @@ impl TryFrom<schema::E2DetectorType> for E2Detector {
     fn try_from(value: schema::E2DetectorType) -> Result<Self> {
         Ok(E2Detector {
             id: DetectorId(value.id),
-            coverage: lane_coverage(value.lane, value.lanes.as_deref())?,
+            coverage: lane_coverage(value.lane, value.lanes.as_deref(), value.length.as_deref())?,
             position: value
                 .pos
                 .as_deref()
@@ -273,13 +292,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_detector_that_sets_both_lane_and_lanes() {
-        assert!(lane_coverage(Some("e0_0".into()), Some("e0_0 e1_0")).is_err());
-        assert_eq!(lane_coverage(None, None).unwrap(), None);
+    fn rejects_the_lane_combinations_sumo_rejects() {
+        // `lanes` excludes both `lane` and `length`.
+        assert!(lane_coverage(Some("e0_0".into()), Some("e0_0 e1_0"), None).is_err());
+        assert!(lane_coverage(None, Some("e0_0 e1_0"), Some("50.0")).is_err());
+
+        // `lane` + `length` is the normal single-anchor form, and `length`
+        // with neither attribute is odd but not something SUMO forbids.
         assert_eq!(
-            lane_coverage(Some("e0_0".into()), None).unwrap(),
+            lane_coverage(Some("e0_0".into()), None, Some("50.0")).unwrap(),
             Some(LaneCoverage::SingleLane(LaneRef("e0_0".into())))
         );
+        assert_eq!(lane_coverage(None, None, Some("50.0")).unwrap(), None);
+        assert_eq!(lane_coverage(None, None, None).unwrap(), None);
     }
 
     #[test]

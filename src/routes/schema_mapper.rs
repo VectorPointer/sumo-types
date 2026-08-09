@@ -10,25 +10,16 @@
 //! module actually needs, aren't used by `net` at all).
 
 use super::domain::{
-    Color, Depart, EdgeRef, NamedColor, Route, RouteId, Routes, Vehicle, VehicleId, VehicleType,
+    Color, Depart, NamedColor, Route, RouteId, Routes, Vehicle, VehicleId, VehicleType,
     VehicleTypeId,
 };
 use crate::schema;
+use crate::sumo::split_ids;
 use anyhow::{Context, Result, bail};
 use uom::si::f64::{Length, Time, Velocity};
 use uom::si::length::meter;
 use uom::si::time::second;
 use uom::si::velocity::meter_per_second;
-
-/// `routeType/@edges` is a whitespace-separated list of edge ids, same
-/// convention as `net`'s (see `crate::net::schema_mapper::split_ids`) —
-/// duplicated rather than shared for the same reason the two formats' id
-/// newtypes are duplicated: `routes` doesn't depend on `net`.
-fn split_edge_refs(raw: &str) -> Vec<EdgeRef> {
-    raw.split_whitespace()
-        .map(|s| EdgeRef(s.to_owned()))
-        .collect()
-}
 
 /// SUMO accepts both `"grey"` and `"gray"` for the same named color.
 impl From<schema::ColorType6Type> for NamedColor {
@@ -144,7 +135,7 @@ impl TryFrom<schema::RouteType> for Route {
     fn try_from(value: schema::RouteType) -> Result<Self> {
         Ok(Route {
             id: RouteId(value.id),
-            edges: value.edges.as_deref().map(split_edge_refs),
+            edges: value.edges.as_deref().map(split_ids),
             color: value.color.map(Color::try_from).transpose()?,
         })
     }
@@ -219,6 +210,7 @@ impl TryFrom<schema::RoutesType> for Routes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::routes::domain::EdgeRef;
 
     #[test]
     fn parses_numeric_rgb_color_defaulting_alpha() {
@@ -289,7 +281,7 @@ mod tests {
     #[test]
     fn splits_whitespace_separated_edge_list() {
         assert_eq!(
-            split_edge_refs("e0 e1 e2"),
+            split_ids::<EdgeRef>("e0 e1 e2"),
             vec![
                 EdgeRef("e0".into()),
                 EdgeRef("e1".into()),

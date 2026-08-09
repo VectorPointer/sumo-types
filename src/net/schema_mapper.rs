@@ -17,50 +17,11 @@ use super::domain::{
     default_lane_end_offset, default_lane_width,
 };
 use crate::schema;
+use crate::sumo::{parse_bool_opt, parse_finite, split_ids, split_ids_opt};
 use anyhow::{Context, Result, bail};
 use uom::si::f64::{Length, Velocity};
 use uom::si::length::meter;
 use uom::si::velocity::meter_per_second;
-
-/// Converts SUMO's permissive `boolType` spelling into a real `bool`.
-///
-/// `schema::BoolType` is a type local to this crate, so implementing a
-/// foreign trait (`TryFrom`) for a foreign type (`bool`) is allowed here:
-/// the orphan rule only requires *one* of the trait's types to be local.
-impl TryFrom<schema::BoolType> for bool {
-    type Error = anyhow::Error;
-
-    fn try_from(value: schema::BoolType) -> Result<Self> {
-        use schema::BoolType as S;
-        match value {
-            S::true_ | S::True | S::yes | S::on | S::_1 => Ok(true),
-            S::false_ | S::False | S::no | S::off | S::_0 => Ok(false),
-            // "x" and "-" are the "unspecified" value SUMO uses for
-            // configuration options; they have no boolean equivalent.
-            S::x | S::Dash => bail!("SUMO boolean value with no binary meaning (\"x\"/\"-\")"),
-        }
-    }
-}
-
-/// Parses one coordinate, rejecting `NaN` and the infinities.
-///
-/// `f64::from_str` accepts `"NaN"`, `"inf"` and `"-inf"`, and none of them
-/// match SUMO's `positionType`/`shapeType` patterns — but xsd-parser doesn't
-/// enforce `xsd:pattern`, so nothing else in the pipeline would catch them.
-/// Letting one through poisons every downstream computation silently, which
-/// is exactly the failure mode this crate's typed layer exists to prevent.
-fn parse_finite(raw: &str, context: &str) -> Result<f64> {
-    let value: f64 = raw
-        .trim()
-        .parse()
-        .with_context(|| format!("invalid {context}: {raw:?}"))?;
-
-    if !value.is_finite() {
-        bail!("non-finite {context}: {raw:?}");
-    }
-
-    Ok(value)
-}
 
 /// Parses SUMO's `positionType` format: `"x,y"` or `"x,y,z"`.
 impl TryFrom<&str> for Point {
@@ -119,21 +80,6 @@ impl TryFrom<&str> for Boundary {
             max: (max_x, max_y),
         })
     }
-}
-
-// `Vec<T>` is foreign to this crate, so a whitespace-separated list can't be
-// expressed as a `TryFrom` impl on a type we own (orphan rule) — it stays a
-// small free function, generic over the id newtype the caller expects
-// (`LaneId`, `JunctionId`, `EdgeId`, or plain `String` for non-id lists like
-// vehicle class names).
-fn split_ids<T: From<String>>(raw: &str) -> Vec<T> {
-    raw.split_whitespace()
-        .map(|s| T::from(s.to_owned()))
-        .collect()
-}
-
-fn split_ids_opt<T: From<String>>(raw: Option<&str>) -> Vec<T> {
-    raw.map(split_ids).unwrap_or_default()
 }
 
 /// `"!"` is SUMO's sentinel for "not georeferenced"; anything else is taken
@@ -347,12 +293,8 @@ impl TryFrom<schema::ConnectionType> for Connection {
             via: value.via.map(LaneId),
             traffic_light: value.tl.map(TrafficLightId),
             link_index: value.link_index.map(LinkIndex),
-            pass: value.pass.map(bool::try_from).transpose()?.unwrap_or(false),
-            keep_clear: value
-                .keep_clear
-                .map(bool::try_from)
-                .transpose()?
-                .unwrap_or(true),
+            pass: parse_bool_opt(value.pass)?.unwrap_or(false),
+            keep_clear: parse_bool_opt(value.keep_clear)?.unwrap_or(true),
         })
     }
 }
@@ -505,20 +447,6 @@ mod tests {
             "keepClear defaults to true in SUMO when absent"
         );
         assert!(!domain.pass, "pass defaults to false when absent");
-    }
-
-    #[test]
-    fn rejects_bool_without_binary_meaning() {
-        assert!(bool::try_from(schema::BoolType::x).is_err());
-        assert!(bool::try_from(schema::BoolType::Dash).is_err());
-    }
-
-    #[test]
-    fn distinguishes_case_sensitive_bool_spellings() {
-        assert!(bool::try_from(schema::BoolType::True).unwrap());
-        assert!(bool::try_from(schema::BoolType::true_).unwrap());
-        assert!(!bool::try_from(schema::BoolType::False).unwrap());
-        assert!(!bool::try_from(schema::BoolType::false_).unwrap());
     }
 
     fn sample_location(proj_parameter: &str) -> schema::LocationType {

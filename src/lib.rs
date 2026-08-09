@@ -135,6 +135,19 @@ mod schema {
 #[cfg(any(feature = "net", feature = "routes", feature = "additional"))]
 mod xml;
 
+/// SUMO primitives shared by every format's `schema_mapper` — how SUMO
+/// spells a boolean, encodes a number, writes a list of ids.
+///
+/// `dead_code` is allowed for the whole module because which helpers are
+/// live depends on the active feature set: `split_ids_opt` is only reached
+/// from `net`, the boolean table only from `net` and `additional`, and with
+/// `routes` alone most of the module is unused. Gating each helper on the
+/// features that happen to call it today would be noise that has to be
+/// re-derived every time a mapper changes.
+#[cfg(any(feature = "net", feature = "routes", feature = "additional"))]
+#[allow(dead_code)]
+mod sumo;
+
 /// `net` format's own files (`domain`, `reader`, `schema_mapper`); kept
 /// private and re-exported below so its public path (`sumo_types::domain`,
 /// `sumo_types::read_network`) doesn't have to match where the files live.

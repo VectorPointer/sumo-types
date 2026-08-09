@@ -16,41 +16,17 @@ use super::domain::{
     Additional, DetectorGate, DetectorId, E1Detector, E2Detector, E3Detector, LanePosition, LaneRef,
 };
 use crate::schema;
-use anyhow::{Context, Result, bail};
+use crate::sumo::{parse_bool_opt, parse_finite, split_ids};
+use anyhow::Result;
 use uom::si::f64::{Length, Time, Velocity};
 use uom::si::length::meter;
 use uom::si::time::second;
 use uom::si::velocity::meter_per_second;
 
-/// Parses one of SUMO's text-encoded `floatType` values, rejecting `NaN`
-/// and the infinities for the same reason `net`'s mapper does: `f64`'s
-/// `FromStr` accepts them, SUMO's pattern doesn't, and xsd-parser enforces
-/// no `xsd:pattern`.
-fn parse_finite(raw: &str, context: &str) -> Result<f64> {
-    let value: f64 = raw
-        .trim()
-        .parse()
-        .with_context(|| format!("invalid {context}: {raw:?}"))?;
-
-    if !value.is_finite() {
-        bail!("non-finite {context}: {raw:?}");
-    }
-
-    Ok(value)
-}
-
 fn lane_position(raw: &str, context: &str) -> Result<LanePosition> {
     Ok(LanePosition(Length::new::<meter>(parse_finite(
         raw, context,
     )?)))
-}
-
-/// `lanes` is a whitespace-separated list of lane ids, same convention as
-/// the other formats' id lists.
-fn split_lane_refs(raw: &str) -> Vec<LaneRef> {
-    raw.split_whitespace()
-        .map(|id| LaneRef(id.to_owned()))
-        .collect()
 }
 
 fn seconds(value: Option<f32>) -> Option<Time> {
@@ -67,23 +43,6 @@ fn sampling_period(period: Option<f32>, freq: Option<f32>) -> Option<Time> {
     seconds(period.or(freq))
 }
 
-/// `bool` conversion goes through the same `schema::BoolType` table `net`
-/// uses, but that impl lives behind the `net` feature, so it is repeated
-/// here rather than depended on.
-fn optional_bool(value: Option<schema::BoolType>) -> Result<Option<bool>> {
-    use schema::BoolType as S;
-
-    value
-        .map(|value| match value {
-            S::true_ | S::True | S::yes | S::on | S::_1 => Ok(true),
-            S::false_ | S::False | S::no | S::off | S::_0 => Ok(false),
-            S::x | S::Dash => {
-                bail!("SUMO boolean value with no binary meaning (\"x\"/\"-\")")
-            }
-        })
-        .transpose()
-}
-
 impl TryFrom<schema::DetEntryExitType> for DetectorGate {
     type Error = anyhow::Error;
 
@@ -91,7 +50,7 @@ impl TryFrom<schema::DetEntryExitType> for DetectorGate {
         Ok(DetectorGate {
             lane: LaneRef(value.lane),
             position: lane_position(&value.pos, "detector gate position")?,
-            friendly_position: optional_bool(value.friendly_pos)?,
+            friendly_position: parse_bool_opt(value.friendly_pos)?,
         })
     }
 }
@@ -108,7 +67,7 @@ impl TryFrom<schema::E1DetectorType> for E1Detector {
             period: sampling_period(value.period, value.freq),
             length: meters(value.length),
             name: value.name,
-            friendly_position: optional_bool(value.friendly_pos)?,
+            friendly_position: parse_bool_opt(value.friendly_pos)?,
         })
     }
 }
@@ -120,11 +79,7 @@ impl TryFrom<schema::E2DetectorType> for E2Detector {
         Ok(E2Detector {
             id: DetectorId(value.id),
             lane: value.lane.map(LaneRef),
-            lanes: value
-                .lanes
-                .as_deref()
-                .map(split_lane_refs)
-                .unwrap_or_default(),
+            lanes: value.lanes.as_deref().map(split_ids).unwrap_or_default(),
             position: value
                 .pos
                 .as_deref()
@@ -144,7 +99,7 @@ impl TryFrom<schema::E2DetectorType> for E2Detector {
             file: value.file,
             period: sampling_period(value.period, value.freq),
             name: value.name,
-            friendly_position: optional_bool(value.friendly_pos)?,
+            friendly_position: parse_bool_opt(value.friendly_pos)?,
             speed_threshold: value
                 .speed_threshold
                 .as_deref()
@@ -188,7 +143,7 @@ impl TryFrom<schema::E3DetectorType> for E3Detector {
             speed_threshold: value
                 .speed_threshold
                 .map(|s| Velocity::new::<meter_per_second>(f64::from(s))),
-            open_entry: optional_bool(value.open_entry)?,
+            open_entry: parse_bool_opt(value.open_entry)?,
         })
     }
 }
@@ -242,13 +197,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_non_finite_gate_position() {
-        assert!(lane_position("NaN", "test").is_err());
-        assert!(lane_position("inf", "test").is_err());
-        assert!(lane_position("not-a-number", "test").is_err());
-    }
-
-    #[test]
     fn parses_a_negative_position_as_given() {
         // SUMO reads a negative `pos` as "measured back from the lane's
         // end". Resolving it needs the lane's length, which lives in the
@@ -282,7 +230,7 @@ mod tests {
     #[test]
     fn splits_a_lane_chain() {
         assert_eq!(
-            split_lane_refs("e0_0 e1_0  e2_0"),
+            split_ids::<LaneRef>("e0_0 e1_0  e2_0"),
             vec![
                 LaneRef("e0_0".into()),
                 LaneRef("e1_0".into()),
@@ -293,10 +241,10 @@ mod tests {
 
     #[test]
     fn rejects_bool_without_binary_meaning() {
-        assert!(optional_bool(Some(schema::BoolType::x)).is_err());
-        assert_eq!(optional_bool(None).unwrap(), None);
+        assert!(parse_bool_opt(Some(schema::BoolType::x)).is_err());
+        assert_eq!(parse_bool_opt(None).unwrap(), None);
         assert_eq!(
-            optional_bool(Some(schema::BoolType::True)).unwrap(),
+            parse_bool_opt(Some(schema::BoolType::True)).unwrap(),
             Some(true)
         );
     }

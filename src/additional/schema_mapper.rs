@@ -13,20 +13,52 @@
 //! real `xsd:float`s, and arrive as `f32`.
 
 use super::domain::{
-    Additional, DetectorGate, DetectorId, E1Detector, E2Detector, E3Detector, LanePosition, LaneRef,
+    Additional, DetectorGate, DetectorId, E1Detector, E2Detector, E3Detector, LaneCoverage,
+    LanePosition, LaneRef, Point,
 };
 use crate::schema;
 use crate::sumo::{parse_bool_opt, parse_finite, split_ids};
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use uom::si::f64::{Length, Time, Velocity};
 use uom::si::length::meter;
 use uom::si::time::second;
 use uom::si::velocity::meter_per_second;
 
+/// SUMO packs "from the start" and "from the end" into the sign of one
+/// number; [`LanePosition`] splits them, so the sign is read here and
+/// nowhere else.
 fn lane_position(raw: &str, context: &str) -> Result<LanePosition> {
-    Ok(LanePosition(Length::new::<meter>(parse_finite(
-        raw, context,
-    )?)))
+    let value = parse_finite(raw, context)?;
+
+    Ok(if value < 0.0 {
+        LanePosition::FromEnd(Length::new::<meter>(-value))
+    } else {
+        LanePosition::FromStart(Length::new::<meter>(value))
+    })
+}
+
+/// Parses `e3Detector/@pos`, the icon position: `"x,y"` or `"x,y,z"`.
+fn icon_position(raw: &str) -> Result<Point> {
+    let mut parts = raw.split(',');
+    let mut next = |what: &str| -> Result<f64> {
+        let part = parts
+            .next()
+            .with_context(|| format!("incomplete detector icon position: {raw:?}"))?;
+        parse_finite(part, what)
+    };
+
+    let x = next("detector icon position x")?;
+    let y = next("detector icon position y")?;
+    let z = match parts.next() {
+        Some(z) => parse_finite(z, "detector icon position z")?,
+        None => 0.0,
+    };
+
+    if parts.next().is_some() {
+        bail!("detector icon position with too many coordinates: {raw:?}");
+    }
+
+    Ok(Point { x, y, z })
 }
 
 fn seconds(value: Option<f32>) -> Option<Time> {
@@ -72,14 +104,26 @@ impl TryFrom<schema::E1DetectorType> for E1Detector {
     }
 }
 
+/// `lane` and `lanes` are alternatives. SUMO rejects a detector that sets
+/// both, so this does too rather than silently picking one.
+fn lane_coverage(lane: Option<String>, lanes: Option<&str>) -> Result<Option<LaneCoverage>> {
+    match (lane, lanes) {
+        (Some(_), Some(_)) => {
+            bail!("e2Detector sets both `lane` and `lanes`; they are alternatives")
+        }
+        (Some(lane), None) => Ok(Some(LaneCoverage::SingleLane(LaneRef(lane)))),
+        (None, Some(lanes)) => Ok(Some(LaneCoverage::LaneChain(split_ids(lanes)))),
+        (None, None) => Ok(None),
+    }
+}
+
 impl TryFrom<schema::E2DetectorType> for E2Detector {
     type Error = anyhow::Error;
 
     fn try_from(value: schema::E2DetectorType) -> Result<Self> {
         Ok(E2Detector {
             id: DetectorId(value.id),
-            lane: value.lane.map(LaneRef),
-            lanes: value.lanes.as_deref().map(split_ids).unwrap_or_default(),
+            coverage: lane_coverage(value.lane, value.lanes.as_deref())?,
             position: value
                 .pos
                 .as_deref()
@@ -103,9 +147,21 @@ impl TryFrom<schema::E2DetectorType> for E2Detector {
             speed_threshold: value
                 .speed_threshold
                 .as_deref()
-                .map(|raw| parse_finite(raw, "e2Detector speed threshold"))
+                .map(|raw| parse_finite(raw, "e2Detector speedThreshold"))
                 .transpose()?
                 .map(Velocity::new::<meter_per_second>),
+            time_threshold: value
+                .time_threshold
+                .as_deref()
+                .map(|raw| parse_finite(raw, "e2Detector timeThreshold"))
+                .transpose()?
+                .map(Time::new::<second>),
+            jam_threshold: value
+                .jam_threshold
+                .as_deref()
+                .map(|raw| parse_finite(raw, "e2Detector jamThreshold"))
+                .transpose()?
+                .map(Length::new::<meter>),
         })
     }
 }
@@ -139,10 +195,16 @@ impl TryFrom<schema::E3DetectorType> for E3Detector {
             file: value.file,
             period: sampling_period(value.period, value.freq),
             name: value.name,
-            icon_position: value.pos,
+            icon_position: value.pos.as_deref().map(icon_position).transpose()?,
             speed_threshold: value
                 .speed_threshold
                 .map(|s| Velocity::new::<meter_per_second>(f64::from(s))),
+            time_threshold: value
+                .time_threshold
+                .as_deref()
+                .map(|raw| parse_finite(raw, "e3Detector timeThreshold"))
+                .transpose()?
+                .map(Time::new::<second>),
             open_entry: parse_bool_opt(value.open_entry)?,
         })
     }
@@ -197,12 +259,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_a_negative_position_as_given() {
-        // SUMO reads a negative `pos` as "measured back from the lane's
-        // end". Resolving it needs the lane's length, which lives in the
-        // `.net.xml`, so it is kept verbatim rather than normalised.
-        let position = lane_position("-12.5", "test").unwrap();
-        assert_eq!(position.0.get::<meter>(), -12.5);
+    fn reads_the_sign_of_a_position_as_which_end_it_is_measured_from() {
+        assert_eq!(
+            lane_position("12.5", "test").unwrap(),
+            LanePosition::FromStart(Length::new::<meter>(12.5))
+        );
+        // Negative means "back from the lane's end", and the variant says
+        // so instead of leaving a signed number for the caller to misread.
+        assert_eq!(
+            lane_position("-12.5", "test").unwrap(),
+            LanePosition::FromEnd(Length::new::<meter>(12.5))
+        );
+    }
+
+    #[test]
+    fn rejects_a_detector_that_sets_both_lane_and_lanes() {
+        assert!(lane_coverage(Some("e0_0".into()), Some("e0_0 e1_0")).is_err());
+        assert_eq!(lane_coverage(None, None).unwrap(), None);
+        assert_eq!(
+            lane_coverage(Some("e0_0".into()), None).unwrap(),
+            Some(LaneCoverage::SingleLane(LaneRef("e0_0".into())))
+        );
+    }
+
+    #[test]
+    fn parses_the_icon_position_with_and_without_z() {
+        assert_eq!(
+            icon_position("42,7").unwrap(),
+            Point {
+                x: 42.0,
+                y: 7.0,
+                z: 0.0
+            }
+        );
+        assert_eq!(
+            icon_position("42,7,1.5").unwrap(),
+            Point {
+                x: 42.0,
+                y: 7.0,
+                z: 1.5
+            }
+        );
+        assert!(icon_position("42").is_err());
+        assert!(icon_position("42,7,1,9").is_err());
     }
 
     #[test]

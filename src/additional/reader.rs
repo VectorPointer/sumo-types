@@ -35,7 +35,8 @@ pub fn read_additional_from(source: impl BufRead) -> Result<Additional> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::additional::domain::{DetectorId, LaneRef};
+    use crate::additional::domain::{DetectorId, LaneCoverage, LanePosition, LaneRef, Point};
+    use uom::si::f64::Length;
     use uom::si::length::meter;
     use uom::si::time::second;
 
@@ -61,20 +62,39 @@ mod tests {
         let loop0 = &additional.induction_loops[0];
         assert_eq!(loop0.id, DetectorId("loop0".into()));
         assert_eq!(loop0.lane, LaneRef("e0_0".into()));
-        assert_eq!(loop0.position.0.get::<meter>(), 12.5);
+        assert_eq!(
+            loop0.position,
+            LanePosition::FromStart(Length::new::<meter>(12.5))
+        );
         assert_eq!(loop0.period.unwrap().get::<second>(), 60.0);
 
         assert_eq!(additional.lane_area_detectors.len(), 1);
         let area0 = &additional.lane_area_detectors[0];
-        assert_eq!(area0.lane, Some(LaneRef("e0_0".into())));
-        assert_eq!(area0.end_position.unwrap().0.get::<meter>(), 50.0);
+        assert_eq!(
+            area0.coverage,
+            Some(LaneCoverage::SingleLane(LaneRef("e0_0".into())))
+        );
+        assert_eq!(
+            area0.end_position,
+            Some(LanePosition::FromStart(Length::new::<meter>(50.0)))
+        );
 
         assert_eq!(additional.entry_exit_detectors.len(), 1);
         let zone0 = &additional.entry_exit_detectors[0];
         assert_eq!(zone0.entries.len(), 2);
         assert_eq!(zone0.exits.len(), 1);
-        assert_eq!(zone0.exits[0].position.0.get::<meter>(), 100.0);
-        assert_eq!(zone0.icon_position.as_deref(), Some("42.00,7.00"));
+        assert_eq!(
+            zone0.exits[0].position,
+            LanePosition::FromStart(Length::new::<meter>(100.0))
+        );
+        assert_eq!(
+            zone0.icon_position,
+            Some(Point {
+                x: 42.0,
+                y: 7.0,
+                z: 0.0
+            })
+        );
     }
 
     #[test]

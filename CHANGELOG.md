@@ -16,6 +16,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   detector definitions. Independent of `net` and `routes`. Everything else
   `additionalType` allows is silently dropped — see the README.
 
+  Three places where SUMO encodes a distinction in a way that is easy to
+  misread are modelled as types rather than left to the caller: a position
+  along a lane is `LanePosition::FromStart`/`FromEnd` instead of a signed
+  length (SUMO puts "measured from the end" in the sign, and reading
+  `-12.5` as a distance from the start puts a detector at the wrong end of
+  the road); an E2 detector's extent is `LaneCoverage::SingleLane`/
+  `LaneChain` instead of two optional fields that must not both be set; and
+  an E3's icon position is a parsed `Point` rather than the raw `"x,y"`
+  string, even though the XSD types that attribute as a bare
+  `xsd:string`.
+
 ### Fixed
 
 - The claim that `additional_file.xsd` could not be generated at all was

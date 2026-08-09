@@ -88,11 +88,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # `cargo package` only verifies the default feature set, but `include`
-      # ships the schemas `routes` needs too — so build the packaged tarball
-      # with every feature on, which is what a consumer enabling `routes`
-      # from crates.io actually does.
+      # ships the schemas the non-default features need too — so build the
+      # packaged tarball with every feature on, which is what a consumer
+      # enabling `routes` or `additional` from crates.io actually does.
+      #
+      # The `rm -rf` is load-bearing: `rust-cache` restores `target/`, so a
+      # previous run's `target/package/sumo-types-<old version>/` survives
+      # into this one and the glob below then matches two directories. That
+      # is what broke the first build after the version bump, and it only
+      # reproduces on a runner with a warm cache.
       - name: Package and build the tarball with all features
         run: |
+          rm -rf target/package
           cargo package
           cd target/package/sumo-types-*/
           cargo build --all-features

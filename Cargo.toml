@@ -1,6 +1,6 @@
 [package]
 name = "sumo-types"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # 1.86, not 1.85 (what edition 2024 alone needs): `xsd-parser` pulls in the
 # `icu_*` crates as a build-dependency, and those require 1.86. A build
@@ -8,7 +8,7 @@ edition = "2024"
 # the floor just as a regular one would. Verified in CI.
 rust-version = "1.86"
 authors = ["Víctor Ariño Pellejero"]
-description = "Reads SUMO (Eclipse SUMO) .net.xml and .rou.xml files into well-typed Rust structs"
+description = "Reads SUMO (Eclipse SUMO) .net.xml, .rou.xml and .add.xml files into well-typed Rust structs"
 keywords = ["sumo", "traffic", "simulation", "netconvert", "xml"]
 categories = ["parser-implementations", "science"]
 # `MIT OR Apache-2.0` covers this crate's own code; the `AND EPL-2.0` covers
@@ -28,11 +28,12 @@ documentation = "https://docs.rs/sumo-types"
 include = [
     "src/**/*.rs",
     "build.rs",
-    "xsd/net_file.xsd",       # net
-    "xsd/types/taz.xsd",      # net
-    "xsd/routes_file.xsd",    # routes
-    "xsd/types/route.xsd",    # routes
-    "xsd/types/base.xsd",     # net + routes
+    "xsd/net_file.xsd",        # net
+    "xsd/types/taz.xsd",       # net + additional
+    "xsd/routes_file.xsd",     # routes
+    "xsd/types/route.xsd",     # routes + additional
+    "xsd/additional_file.xsd", # additional
+    "xsd/types/base.xsd",      # all three
     "README.md",
     "CHANGELOG.md",
     "NOTICE",
@@ -54,6 +55,9 @@ net = []
 # Reads `.rou.xml` (traffic demand: routes, vehicle types, vehicles) into
 # `routes::Routes`. Independent of `net` — it does not require it enabled.
 routes = []
+# Reads `.add.xml` (SUMO "additional" files) into `additional::Additional`,
+# modelling the E1/E2/E3 detector definitions. Independent of the other two.
+additional = []
 
 [dependencies]
 anyhow = "1.0.104"

@@ -22,26 +22,23 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      # Every valid feature combination. The empty one is deliberately
-      # excluded: with no format feature the crate has nothing to generate
-      # and `lib.rs` refuses to compile on purpose (see its `compile_error!`).
+      # Every feature combination, not a hand-kept list: with three format
+      # features the combinations outgrew being enumerated by hand, and the
+      # ones that get forgotten are exactly where bugs hide (a type name that
+      # only resolves when another feature happens to be on, an intra-doc link
+      # to a gated item). `--exclude-no-default-features` skips the empty set,
+      # which is rejected on purpose — the step below covers that case.
+      - uses: taiki-e/install-action@cargo-hack
+
       # `-D warnings` goes after `--`, not in RUSTFLAGS: RUSTFLAGS applies to
       # dependencies too, and this crate's warning policy is not theirs.
       - name: Clippy
-        run: |
-          for features in "" "--no-default-features --features routes" "--all-features"; do
-            echo "::group::clippy $features"
-            cargo clippy --all-targets $features -- -D warnings
-            echo "::endgroup::"
-          done
+        run: >
+          cargo hack --feature-powerset --exclude-no-default-features
+          clippy --all-targets -- -D warnings
 
       - name: Test
-        run: |
-          for features in "" "--no-default-features --features routes" "--all-features"; do
-            echo "::group::test $features"
-            cargo test $features
-            echo "::endgroup::"
-          done
+        run: cargo hack --feature-powerset --exclude-no-default-features test
 
       # The empty feature set must fail, and must fail as an ordinary rustc
       # error naming the missing feature — not as an opaque build-script
@@ -62,19 +59,17 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-hack
       # Intra-doc links to feature-gated items break under any feature set
       # that doesn't enable them, and the crate-level `//!` docs can't be
-      # `#[cfg]`-gated — so all three combinations have to be clean, not
-      # just the `--all-features` one docs.rs builds.
+      # `#[cfg]`-gated — so every combination has to be clean, not just the
+      # `--all-features` one docs.rs builds.
       - name: Build docs under every feature combination
         env:
           RUSTDOCFLAGS: -D warnings
         run: |
-          for features in "" "--no-default-features --features routes" "--all-features"; do
-            echo "::group::doc $features"
-            cargo doc --no-deps $features
-            echo "::endgroup::"
-          done
+          cargo hack --feature-powerset --exclude-no-default-features \
+            doc --no-deps
 
   msrv:
     name: MSRV (1.86)

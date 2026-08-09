@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use inflector::Inflector;
 use std::env;
 use std::fs;
@@ -31,17 +31,13 @@ const OUTPUT_FILE_NAME: &str = "generated_schema.rs";
 /// `types/base.xsd` define (`positionType`, `boolType`, ...) instead of one
 /// shared `schema` module.
 ///
-/// Not every SUMO schema can be added this way, at least not as-is: e.g.
-/// `additional_file.xsd` fails generation (`UnknownType(fileOptionType)`)
-/// because its include graph reaches `types/base.xsd` via three different
-/// paths (directly, and via `types/route.xsd` and `types/taz.xsd`), and
-/// xsd-parser 1.5.2 does not resolve that diamond correctly — confirmed by
-/// generating `types/base.xsd` and the file that needs it as the only two
-/// schema roots, which still fails the same way. `net_file.xsd` and
-/// `routes_file.xsd` each avoid this because they only reach `base.xsd` by
-/// a single path (through `types/taz.xsd` and `types/route.xsd`
-/// respectively).
-const FEATURE_SCHEMAS: &[(&str, &str)] = &[("net", "net_file.xsd"), ("routes", "routes_file.xsd")];
+/// Not every SUMO schema generates as-is; `additional_file.xsd` needs the
+/// targeted patch in [`PER_FILE_PATCHES`] first.
+const FEATURE_SCHEMAS: &[(&str, &str)] = &[
+    ("net", "net_file.xsd"),
+    ("routes", "routes_file.xsd"),
+    ("additional", "additional_file.xsd"),
+];
 
 /// Cargo sets `CARGO_FEATURE_<NAME>` (uppercased, `-` -> `_`) for every
 /// enabled feature of the crate the build script belongs to.
@@ -136,10 +132,111 @@ fn rename_colliding_types(content: &str) -> String {
         })
 }
 
+/// Patches that apply to one specific schema rather than to all of them:
+/// `file name -> (literal text to find, replacement)`.
+///
+/// `additional_file.xsd` fails to generate untouched, with
+/// `UnknownType(fileOptionType)`. The cause is not the file itself — it
+/// never mentions `fileOptionType` — but its `types/metadata.xsd` include:
+/// that schema pulls in the 13 `*ConfigurationType.xsd` files describing
+/// every SUMO tool's command-line options (netconvert, duarouter,
+/// polyconvert, ...), and `fileOptionType` lives in that graph. All
+/// `additional_file.xsd` actually wants from it is one optional
+/// `<metadata>` child of `<additional>`, carrying the provenance block SUMO
+/// writes (which tool and version produced the file).
+///
+/// Dropping the include and that one `minOccurs="0"` element collapses the
+/// graph to `route.xsd` + `taz.xsd` + `base.xsd` — the same shape
+/// `net_file.xsd` and `routes_file.xsd` already generate from — and the
+/// whole schema comes out clean. The cost is that `<metadata>` can't be
+/// read; nothing this crate models needs it.
+///
+/// The second patch names an anonymous `xsd:choice`. xsd-parser derives a
+/// name for such a type from a *global counter over everything it has
+/// generated so far*, so the same choice came out as
+/// `E3DetectorContent75Type` with all three formats enabled but
+/// `E3DetectorContent70Type` with only `additional` — the ordinal shifts
+/// with the active feature set, and `schema_mapper` can't name a type whose
+/// name depends on which features the consumer picked. Hoisting the choice
+/// into a named `xsd:group` makes xsd-parser derive the name from the group
+/// instead (`E3DetectorDetGateGroupType`), stable across every
+/// combination. The group
+/// is a pure refactor of the XSD: `xsd:group` is an inlined definition, so
+/// the document shape it accepts is unchanged.
+///
+/// Keyed by file name on purpose: [`patch_xsd`] runs over all 75 vendored
+/// schemas, and 46 of them include `types/base.xsd` while several include
+/// `types/metadata.xsd`. Applying this blindly would silently reshape
+/// schemas that have nothing to do with `.add.xml`.
+const PER_FILE_PATCHES: &[(&str, &[(&str, &str)])] = &[(
+    "additional_file.xsd",
+    &[
+        // Cut the whole `types/metadata.xsd` subtree loose ...
+        (
+            "    <xsd:include schemaLocation=\"types/metadata.xsd\"/>\n",
+            "",
+        ),
+        // ... along with the single optional element that needed it.
+        (
+            "            <xsd:element name=\"metadata\" type=\"metadataType\" minOccurs=\"0\" maxOccurs=\"1\"/>\n",
+            "",
+        ),
+        // Give the detEntry/detExit choice a name of its own.
+        (
+            "            <xsd:choice minOccurs=\"2\" maxOccurs=\"unbounded\">\n\
+             \x20               <xsd:element name=\"detEntry\" type=\"detEntryExitType\" minOccurs=\"1\" maxOccurs=\"unbounded\"/>\n\
+             \x20               <xsd:element name=\"detExit\" type=\"detEntryExitType\" minOccurs=\"1\" maxOccurs=\"unbounded\"/>\n\
+             \x20           </xsd:choice>\n",
+            "            <xsd:group ref=\"detGateGroup\" minOccurs=\"2\" maxOccurs=\"unbounded\"/>\n",
+        ),
+        (
+            "    <xsd:complexType name=\"e3DetectorType\">\n",
+            "    <xsd:group name=\"detGateGroup\">\n\
+             \x20       <xsd:choice>\n\
+             \x20           <xsd:element name=\"detEntry\" type=\"detEntryExitType\" minOccurs=\"1\" maxOccurs=\"unbounded\"/>\n\
+             \x20           <xsd:element name=\"detExit\" type=\"detEntryExitType\" minOccurs=\"1\" maxOccurs=\"unbounded\"/>\n\
+             \x20       </xsd:choice>\n\
+             \x20   </xsd:group>\n\
+             \n\
+             \x20   <xsd:complexType name=\"e3DetectorType\">\n",
+        ),
+    ],
+)];
+
+/// Applies the [`PER_FILE_PATCHES`] registered for `file_name`. A no-op for
+/// any schema with no entry there, which is all but one of them.
+///
+/// Fails if a pattern isn't found rather than skipping it: these patches
+/// are matched against literal text from Eclipse SUMO's schemas, so
+/// re-vendoring an updated `xsd/` is exactly when one would stop applying.
+/// Silently skipping would surface much later as an opaque xsd-parser
+/// error, or — worse, for the naming patch — as generated code that still
+/// compiles but under a different type name.
+fn apply_per_file_patches(file_name: &str, content: &str) -> Result<String> {
+    let Some((_, patches)) = PER_FILE_PATCHES.iter().find(|(name, _)| *name == file_name) else {
+        return Ok(content.to_string());
+    };
+
+    patches
+        .iter()
+        .try_fold(content.to_string(), |content, (from, to)| {
+            if !content.contains(from) {
+                bail!(
+                    "patch for {file_name} no longer matches; the vendored schema must have \
+                     changed. Expected to find:\n{from}"
+                );
+            }
+
+            Ok(content.replace(from, to))
+        })
+}
+
 /// Composition of the text patches applied to each `.xsd` before handing it
-/// to xsd-parser.
-fn patch_xsd(content: &str) -> String {
-    rename_colliding_types(&resolve_dtd_entities(content))
+/// to xsd-parser. `file_name` selects the [`PER_FILE_PATCHES`]; the other
+/// two patches are format-agnostic and apply to every schema.
+fn patch_xsd(file_name: &str, content: &str) -> Result<String> {
+    let content = apply_per_file_patches(file_name, content)?;
+    Ok(rename_colliding_types(&resolve_dtd_entities(&content)))
 }
 
 /// Recursively copies `src` into `dst`, patching (see [`patch_xsd`]) any
@@ -158,7 +255,9 @@ fn copy_and_patch_schemas(src: &Path, dst: &Path) -> Result<()> {
 
         if path.extension().is_some_and(|ext| ext == "xsd") {
             let content = fs::read_to_string(&path)?;
-            fs::write(&dest_path, patch_xsd(&content))?;
+            let file_name = entry.file_name();
+            let patched = patch_xsd(&file_name.to_string_lossy(), &content)?;
+            fs::write(&dest_path, patched)?;
         } else {
             fs::copy(&path, &dest_path)?;
         }

@@ -8,6 +8,7 @@
 //! |---|---|---|
 //! | `net` (default) | `.net.xml` (`netconvert` output) | `domain`, `read_network` |
 //! | `routes` | `.rou.xml` (traffic demand) | `routes` |
+//! | `additional` | `.add.xml` (E1/E2/E3 detectors) | `additional` |
 //!
 //! Those are written as plain code spans, not intra-doc links, throughout
 //! this crate-level comment: it can't be `#[cfg]`-gated (a `//!` comment
@@ -68,18 +69,18 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
-#[cfg(not(any(feature = "net", feature = "routes")))]
+#[cfg(not(any(feature = "net", feature = "routes", feature = "additional")))]
 compile_error!(
-    "sumo-types needs at least one format feature enabled: `net` (reads .net.xml) \
-     or `routes` (reads .rou.xml). With none of them the crate has no schema to \
-     generate and no API to offer."
+    "sumo-types needs at least one format feature enabled: `net` (reads .net.xml), \
+     `routes` (reads .rou.xml) or `additional` (reads .add.xml). With none of them \
+     the crate has no schema to generate and no API to offer."
 );
 
 /// Type-checks the examples in `README.md`, so they can't drift from the
 /// real API. Only exists while running doctests, and only when every format
 /// the README demonstrates is available — the file is one document, so it
 /// can't be `#[cfg]`-gated feature by feature.
-#[cfg(all(doctest, feature = "net", feature = "routes"))]
+#[cfg(all(doctest, feature = "net", feature = "routes", feature = "additional"))]
 #[doc = include_str!("../README.md")]
 pub struct ReadmeExamples;
 
@@ -131,7 +132,7 @@ mod schema {
 /// XML plumbing shared by every format's reader: checking that a document's
 /// root element is the one that format expects, which xsd-parser's generated
 /// deserializers don't do. Only needed when there is a reader to plumb.
-#[cfg(any(feature = "net", feature = "routes"))]
+#[cfg(any(feature = "net", feature = "routes", feature = "additional"))]
 mod xml;
 
 /// `net` format's own files (`domain`, `reader`, `schema_mapper`); kept
@@ -163,6 +164,12 @@ pub use net::schema_mapper;
 /// re-exported at the crate root like `net`) — see the crate docs.
 #[cfg(feature = "routes")]
 pub mod routes;
+
+/// `additional` format: reads `.add.xml`, of which only the E1/E2/E3
+/// detector definitions are modelled. Namespaced for the same reason as
+/// `routes` — see the crate docs.
+#[cfg(feature = "additional")]
+pub mod additional;
 
 /// Re-exported because it appears in this crate's public API
 /// (`domain::Lane::length`, `domain::Lane::speed`, ... — code spans rather

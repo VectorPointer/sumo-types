@@ -8,8 +8,9 @@ a *running* simulation, and SUMO's own `sumolib` is Python. This crate fills
 the offline, file-reading gap.
 
 ```console
-$ cargo add sumo-types                        # `net` only (default)
-$ cargo add sumo-types --features routes      # `net` + `routes`
+$ cargo add sumo-types                            # `net` only (default)
+$ cargo add sumo-types --features routes          # `net` + `routes`
+$ cargo add sumo-types --features additional      # `net` + `additional`
 ```
 
 Requires Rust 1.86 or newer.
@@ -38,6 +39,7 @@ SUMO has one file format per Cargo feature. Two are implemented:
 |---|---|---|
 | `net` (default) | `.net.xml` (`netconvert` output) | `sumo_types::domain`, `sumo_types::read_network` |
 | `routes` | `.rou.xml` (traffic demand) | `sumo_types::routes` |
+| `additional` | `.add.xml` (E1/E2/E3 detectors) | `sumo_types::additional` |
 
 ```rust,no_run
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,8 +52,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Both examples above are compiled as doctests (see `ReadmeExamples` in
-`src/lib.rs`), so they can't drift from the real API.
+```rust,no_run
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let additional = sumo_types::additional::read_additional(
+        std::path::Path::new("city.add.xml"),
+    )?;
+    for detector in &additional.entry_exit_detectors {
+        println!("{} has {} entries", detector.id, detector.entries.len());
+    }
+
+    Ok(())
+}
+```
+
+All three examples above are compiled as doctests (see `ReadmeExamples`
+in `src/lib.rs`), so they can't drift from the real API.
 
 `net`'s API sits at the crate root (`sumo_types::domain::Network`,
 `sumo_types::read_network`) because it was this crate's first, only format,
@@ -137,6 +152,23 @@ how `net`'s `domain::Network` doesn't cover every attribute `net_file.xsd`
 allows either. See the doc comments on `routes::domain`'s types for exactly
 what's mapped from each SUMO element.
 
+### What `additional` covers
+
+Only the detector definitions: `E1Detector` (induction loop), `E2Detector`
+(lane area) and `E3Detector` (multi-entry / multi-exit), plus the
+`detEntry`/`detExit` gates of the last one. `additionalType` allows about
+forty more element kinds — `busStop`, `chargingStation`, `parkingArea`,
+`rerouter`, `calibrator`, `variableSpeedSign`, `WAUT`, `poly`, `poi`, and
+the whole of `routesType` over again — and `read_additional` silently drops
+them, same as `routes` drops the parts of its own format it doesn't model.
+
+SUMO spells each detector two ways (`e1Detector`/`inductionLoop`,
+`e2Detector`/`laneAreaDetector`, `e3Detector`/`entryExitDetector`): two
+element names bound to one XSD type. Both spellings land in the same field.
+
+This is a *reader*, like the rest of the crate. It parses a `.add.xml`
+someone else wrote; it does not emit one.
+
 ## Units
 
 Physical quantities are [`uom`](https://crates.io/crates/uom) types
@@ -149,9 +181,11 @@ was compiled against.
 ## Adding another format
 
 Most of the work is mechanical, because the generation layer is already
-format-agnostic — the two SUMO-specific quirks `build.rs` patches around
-both live in `types/base.xsd`, which 46 of the 75 vendored schemas include.
-`routes` was added this way; for another one:
+format-agnostic: two of the three SUMO-specific quirks `build.rs` patches
+around live in `types/base.xsd`, which 46 of the 75 vendored schemas
+include, and apply to every schema alike. The third, `PER_FILE_PATCHES`,
+is keyed by file name for quirks specific to one schema. `routes` and
+`additional` were both added this way; for another one:
 
 1. Add a feature for it in `Cargo.toml`.
 2. Add its entry XSD to `FEATURE_SCHEMAS` in `build.rs`.
@@ -177,23 +211,38 @@ both live in `types/base.xsd`, which 46 of the 75 vendored schemas include.
    naturally, and let the README doctests (`ReadmeExamples` in `src/lib.rs`)
    cover the cross-format story.
 
-Not every SUMO schema can be added this way, at least not with xsd-parser
-1.5.2: `additional_file.xsd` fails generation
-(`UnknownType(fileOptionType)`) because its include graph reaches
-`types/base.xsd` via three different paths (directly, and via
-`types/route.xsd` and `types/taz.xsd`), and xsd-parser doesn't resolve that
-diamond correctly. `net_file.xsd` and `routes_file.xsd` each avoid this
-because they only reach `types/base.xsd` by a single path (through
-`types/taz.xsd` and `types/route.xsd` respectively). Confirmed by generating
-`types/base.xsd` and the file that needs it as the only two schema roots,
-which still fails the same way — so it isn't fixable by including
-`base.xsd` more explicitly.
+Some schemas need a `PER_FILE_PATCHES` entry before they generate at all.
+`additional_file.xsd` needed two, both documented at that constant in
+`build.rs`:
+
+- Untouched it fails with `UnknownType(fileOptionType)`. The file never
+  mentions `fileOptionType`; it drags it in through `types/metadata.xsd`,
+  which includes the 13 `*ConfigurationType.xsd` files describing every
+  SUMO tool's command-line options. All `additional_file.xsd` wants from
+  that subtree is one optional `<metadata>` provenance element, so the
+  patch drops both and the include graph collapses to the same
+  `route.xsd` + `taz.xsd` + `base.xsd` shape the other two formats
+  already generate from. The cost is that `<metadata>` can't be read.
+- xsd-parser names the type behind an anonymous `xsd:choice` after a
+  global counter over everything generated so far, so `e3Detector`'s
+  `detEntry`/`detExit` choice came out as `E3DetectorContent75Type` with
+  every format enabled but `E3DetectorContent70Type` with only
+  `additional` — a type name that shifts with the consumer's feature
+  selection, which `schema_mapper` cannot write down. The patch hoists
+  the choice into a named `xsd:group`, so the name derives from the group
+  (`E3DetectorDetGateGroupType`) and is stable everywhere. Watch for this
+  in any new schema with an inline `xsd:choice`.
+
+Both patches are matched against literal text from Eclipse SUMO's
+schemas and fail the build if they stop matching, which is what should
+happen when `xsd/` is re-vendored from a newer SUMO.
 
 ## Scope of the published package
 
 Only the schemas the implemented features need (`net_file.xsd`,
-`routes_file.xsd`, `types/base.xsd`, `types/route.xsd`, `types/taz.xsd`) are
-published to crates.io — see `include` in `Cargo.toml`. The remaining 70
+`routes_file.xsd`, `additional_file.xsd`, `types/base.xsd`,
+`types/route.xsd`, `types/taz.xsd`) are
+published to crates.io — see `include` in `Cargo.toml`. The remaining 69
 vendored schemas (detector outputs, tool configurations, ...) stay in the
 git repository so that adding a reader for another format later doesn't
 mean re-vendoring them; they'd be added to `include` alongside that

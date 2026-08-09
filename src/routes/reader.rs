@@ -5,46 +5,31 @@
 
 use super::domain::Routes;
 use crate::schema;
-use crate::xml::{RootRecordingReader, ensure_root_is};
-use anyhow::{Context, Result};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use crate::xml::{read_document, read_document_at};
+use anyhow::Result;
+use std::io::BufRead;
 use std::path::Path;
-use xsd_parser_types::quick_xml::{DeserializeSync, IoReader};
 
 /// Reads and deserializes the `.rou.xml` file at `path` into [`Routes`].
 ///
 /// # Errors
 ///
 /// Returns an error if `path` can't be opened, if the document isn't
-/// well-formed XML rooted at `<routes>`, or if any of its attributes can't
-/// be interpreted (a malformed color, an unparseable departure time, ...).
+/// well-formed XML rooted at `<routes>`, or if any of its attributes can't be
+/// interpreted.
 pub fn read_routes(path: &Path) -> Result<Routes> {
-    let input_file = File::open(path)
-        .with_context(|| format!("Could not open input file: {}", path.display()))?;
-
-    read_routes_from(BufReader::new(input_file))
-        .with_context(|| format!("invalid SUMO route file in {}", path.display()))
+    read_document_at::<schema::RoutesType, _>(path, "routes", "SUMO route file")
 }
 
-/// Same as [`read_routes`], for callers that already have the `.rou.xml`
-/// bytes in hand (an in-memory buffer, a decompressed stream, ...) rather
-/// than a file on disk.
+/// Same as [`read_routes`], for callers that already have the `.rou.xml` bytes
+/// in hand (an in-memory buffer, a decompressed stream, ...) rather than a
+/// file on disk.
 ///
 /// # Errors
 ///
 /// Same as [`read_routes`], minus the failure to open a file.
 pub fn read_routes_from(source: impl BufRead) -> Result<Routes> {
-    let mut reader = RootRecordingReader::new(IoReader::new(source));
-
-    let routes = schema::RoutesType::deserialize(&mut reader)
-        .map_err(|error| anyhow::anyhow!("failed to parse SUMO route file: {error}"))?;
-
-    // `routesType`'s content is entirely optional, so without this check any
-    // document at all would parse as an empty `Routes` (see the tests).
-    ensure_root_is(&reader, "routes", "SUMO route file")?;
-
-    Routes::try_from(routes)
+    read_document::<schema::RoutesType, _, _>(source, "routes", "SUMO route file")
 }
 
 #[cfg(test)]

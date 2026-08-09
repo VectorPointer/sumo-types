@@ -5,48 +5,31 @@
 
 use super::domain::Additional;
 use crate::schema;
-use crate::xml::{RootRecordingReader, ensure_root_is};
-use anyhow::{Context, Result};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use crate::xml::{read_document, read_document_at};
+use anyhow::Result;
+use std::io::BufRead;
 use std::path::Path;
-use xsd_parser_types::quick_xml::{DeserializeSync, IoReader};
 
 /// Reads and deserializes the `.add.xml` file at `path` into [`Additional`].
 ///
 /// # Errors
 ///
 /// Returns an error if `path` can't be opened, if the document isn't
-/// well-formed XML rooted at `<additional>`, or if any of its attributes
-/// can't be interpreted (a malformed or non-finite position, a boolean with
-/// no binary meaning, ...).
+/// well-formed XML rooted at `<additional>`, or if any of its attributes can't be
+/// interpreted.
 pub fn read_additional(path: &Path) -> Result<Additional> {
-    let input_file = File::open(path)
-        .with_context(|| format!("Could not open input file: {}", path.display()))?;
-
-    read_additional_from(BufReader::new(input_file))
-        .with_context(|| format!("invalid SUMO additional file in {}", path.display()))
+    read_document_at::<schema::AdditionalType, _>(path, "additional", "SUMO additional file")
 }
 
-/// Same as [`read_additional`], for callers that already have the
-/// `.add.xml` bytes in hand (an in-memory buffer, a decompressed stream,
-/// ...) rather than a file on disk.
+/// Same as [`read_additional`], for callers that already have the `.add.xml` bytes
+/// in hand (an in-memory buffer, a decompressed stream, ...) rather than a
+/// file on disk.
 ///
 /// # Errors
 ///
 /// Same as [`read_additional`], minus the failure to open a file.
 pub fn read_additional_from(source: impl BufRead) -> Result<Additional> {
-    let mut reader = RootRecordingReader::new(IoReader::new(source));
-
-    let additional = schema::AdditionalType::deserialize(&mut reader)
-        .map_err(|error| anyhow::anyhow!("failed to parse SUMO additional file: {error}"))?;
-
-    // `additionalType`'s content is entirely optional, so without this check
-    // any document at all would parse as an empty `Additional` (see the
-    // tests).
-    ensure_root_is(&reader, "additional", "SUMO additional file")?;
-
-    Additional::try_from(additional)
+    read_document::<schema::AdditionalType, _, _>(source, "additional", "SUMO additional file")
 }
 
 #[cfg(test)]

@@ -5,14 +5,12 @@
 
 use super::domain::Network;
 use crate::schema;
-use crate::xml::{RootRecordingReader, ensure_root_is};
-use anyhow::{Context, Result};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use crate::xml::{read_document, read_document_at};
+use anyhow::Result;
+use std::io::BufRead;
 use std::path::Path;
-use xsd_parser_types::quick_xml::{DeserializeSync, IoReader};
 
-/// Reads and deserializes the `.net.xml` file at `path` into a [`Network`].
+/// Reads and deserializes the `.net.xml` file at `path` into [`Network`].
 ///
 /// ```no_run
 /// let network = sumo_types::read_network(std::path::Path::new("city.net.xml"))?;
@@ -24,34 +22,20 @@ use xsd_parser_types::quick_xml::{DeserializeSync, IoReader};
 ///
 /// Returns an error if `path` can't be opened, if the document isn't
 /// well-formed XML rooted at `<net>`, or if any of its attributes can't be
-/// interpreted (a malformed position, a boundary without 4 components, a
-/// non-finite coordinate, ...).
+/// interpreted.
 pub fn read_network(path: &Path) -> Result<Network> {
-    let input_file = File::open(path)
-        .with_context(|| format!("Could not open input file: {}", path.display()))?;
-
-    read_network_from(BufReader::new(input_file))
-        .with_context(|| format!("invalid SUMO network in {}", path.display()))
+    read_document_at::<schema::NetType, _>(path, "net", "SUMO network")
 }
 
-/// Same as [`read_network`], for callers that already have the `.net.xml`
-/// bytes in hand (an in-memory buffer, a decompressed stream, ...) rather
-/// than a file on disk.
+/// Same as [`read_network`], for callers that already have the `.net.xml` bytes
+/// in hand (an in-memory buffer, a decompressed stream, ...) rather than a
+/// file on disk.
 ///
 /// # Errors
 ///
 /// Same as [`read_network`], minus the failure to open a file.
 pub fn read_network_from(source: impl BufRead) -> Result<Network> {
-    let mut reader = RootRecordingReader::new(IoReader::new(source));
-
-    let net = schema::NetType::deserialize(&mut reader)
-        .map_err(|error| anyhow::anyhow!("failed to parse SUMO network: {error}"))?;
-
-    // After deserializing, not before: the root name is only known once the
-    // reader has produced its first element event.
-    ensure_root_is(&reader, "net", "SUMO network")?;
-
-    Network::try_from(net)
+    read_document::<schema::NetType, _, _>(source, "net", "SUMO network")
 }
 
 #[cfg(test)]

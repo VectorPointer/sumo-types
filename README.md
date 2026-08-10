@@ -11,6 +11,7 @@ the offline, file-reading gap.
 $ cargo add sumo-types                            # `net` only (default)
 $ cargo add sumo-types --features routes          # `net` + `routes`
 $ cargo add sumo-types --features additional      # `net` + `additional`
+$ cargo add sumo-types --features write           # `net` + writing it back out
 ```
 
 Requires Rust 1.86 or newer.
@@ -40,6 +41,12 @@ SUMO has one file format per Cargo feature. Three are implemented:
 | `net` (default) | `.net.xml` (`netconvert` output) | `sumo_types::domain`, `sumo_types::read_network` |
 | `routes` | `.rou.xml` (traffic demand) | `sumo_types::routes` |
 | `additional` | `.add.xml` (E1/E2/E3 detectors) | `sumo_types::additional` |
+
+A fourth feature, `write`, isn't a format — it adds a `write_*` counterpart
+to every enabled format's `read_*` (`sumo_types::write_network`,
+`sumo_types::routes::write_routes`,
+`sumo_types::additional::write_additional`), so it does nothing on its own.
+See [Writing](#writing).
 
 ```rust,no_run
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -166,8 +173,85 @@ SUMO spells each detector two ways (`e1Detector`/`inductionLoop`,
 `e2Detector`/`laneAreaDetector`, `e3Detector`/`entryExitDetector`): two
 element names bound to one XSD type. Both spellings land in the same field.
 
-This is a *reader*, like the rest of the crate. It parses a `.add.xml`
-someone else wrote; it does not emit one.
+By default this is a *reader*, like the rest of the crate: it parses a
+`.add.xml` someone else wrote. Enable `write` for the other direction — see
+[Writing](#writing).
+
+## Writing
+
+The `write` feature adds `write_network`/`write_network_to`,
+`routes::write_routes`/`write_routes_to`, and
+`additional::write_additional`/`write_additional_to`: each takes a `domain`
+value by reference and produces `.net.xml`/`.rou.xml`/`.add.xml` bytes,
+running the read pipeline backwards (`domain` -> a per-format `schema_writer`
+-> the same generated `schema` types -> XML).
+
+```rust,ignore
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let network = sumo_types::read_network(std::path::Path::new("city.net.xml"))?;
+    sumo_types::write_network(std::path::Path::new("city-copy.net.xml"), &network)?;
+
+    Ok(())
+}
+```
+
+(`ignore`, not `no_run` like the other examples on this page: `ReadmeExamples`
+in `src/lib.rs` compiles this whole file's examples together under one
+`#[cfg]` that only requires `net`+`routes`+`additional`, not `write` — so
+unlike the others, this one isn't guaranteed to compile whenever
+`ReadmeExamples` itself does. The real, feature-gated, compiled version of
+this example lives on `write_network`'s own doc comment in
+`src/net/writer.rs`.)
+
+What a `write_*` produces round-trips through the matching `read_*` — every
+format's writer has a test doing exactly that — but it isn't a byte-for-byte
+copy of what `netconvert`/`duarouter`/`netedit` themselves would write:
+attributes this crate doesn't model (see "What `routes`/`additional` covers"
+above, and `net`'s own `domain` doc comments) are simply never written, the
+same way `read_*` silently drops them on the way in, and a handful of
+attributes this crate *does* model but that SUMO itself treats as equivalent
+to "absent" (`pass="false"`, `keepClear="true"`, `function="normal"`) are
+written as absent rather than spelled out, because the reader already can't
+tell the two apart. `Length`/`Velocity`/`Time` values that came from one of
+`.net.xml`'s real `xsd:float` attributes (a lane's `speed`/`width`, for
+instance) are narrowed back to `f32` on the way out, the same precision the
+`schema` layer stored them at on the way in.
+
+This feature roughly doubles the code `build.rs` generates (serializers
+alongside the deserializers), so it's opt-in rather than bundled into
+`net`/`routes`/`additional` — a read-only consumer shouldn't pay that
+compile-time cost. It's meaningless without a format to write, and enabling
+it alone (`--features write`, none of `net`/`routes`/`additional`) fails the
+same way the empty feature set does.
+
+## Errors
+
+Every `read_*`/`write_*` returns `Result<_, sumo_types::Error>` — a typed,
+`#[non_exhaustive]` enum built with
+[`thiserror`](https://crates.io/crates/thiserror), not an erased
+`anyhow::Error`. So "the file wasn't there", "the root element was wrong",
+and "a coordinate was `NaN`" are separate variants a caller can match on
+rather than three strings that have to be pattern-matched by hand:
+
+```rust,no_run
+use sumo_types::Error;
+
+fn main() {
+    match sumo_types::read_network(std::path::Path::new("city.net.xml")) {
+        Ok(network) => println!("{} edges", network.edges.len()),
+        Err(Error::Open { path, .. }) => eprintln!("no network at {}", path.display()),
+        Err(Error::WrongRoot { found, .. }) => eprintln!("that's a <{found}> file, not a network"),
+        Err(other) => eprintln!("{other}"),
+    }
+}
+```
+
+The same reasoning that keeps `xsd-parser-types` out of the public API
+applies here: an `anyhow::Error` return type would make `anyhow` part of
+this crate's API, so a major bump there would be a breaking change here.
+`thiserror` is a `derive`-only dependency that appears in no signature, so
+it isn't. (`build.rs` still uses `anyhow`, which is right for a build
+script — it's an executable whose errors only ever get printed.)
 
 ## Units
 
@@ -210,6 +294,23 @@ is keyed by file name for quirks specific to one schema. `routes` and
    reader function's own doc comment, where the feature gate applies
    naturally, and let the README doctests (`ReadmeExamples` in `src/lib.rs`)
    cover the cross-format story.
+6. Optionally, add `write` support: a `schema_writer` module (the reverse of
+   `schema_mapper` — `impl From<&domain::X> for schema::XType`/
+   `TryFrom<&domain::X>` for the top-level type, gated `#[cfg(feature =
+   "write")]`) and a `writer` module (`write_<format>`/`write_<format>_to`,
+   mirroring `reader`'s `read_<format>`/`read_<format>_from`, built on
+   `xml::write_document`/`write_document_at`). A round-trip test — write a
+   sample value, read it back, assert equality — is what actually catches
+   the union-priority and anonymous-choice-naming pitfalls the next two
+   bullets describe; a `schema_mapper` conversion looking right in isolation
+   isn't enough — `routes` had two conversions that looked correct and
+   silently failed on every real document, and only a round-trip caught
+   them (see the `TryFrom<schema::ColorType>` and
+   `TryFrom<schema::DepartType>` doc comments in
+   `src/routes/schema_mapper.rs`). Any doc-comment example that reaches a
+   `write_*` function needs the same `ignore`-vs-`no_run` judgment call as
+   point 5 — see the note beside this README's own `write_network` example.
+
 Some schemas need a `PER_FILE_PATCHES` entry before they generate at all.
 `additional_file.xsd` needed two, both documented at that constant in
 `build.rs`:
@@ -232,8 +333,17 @@ Some schemas need a `PER_FILE_PATCHES` entry before they generate at all.
   (`E3DetectorDetGateGroupType`) and is stable everywhere. Watch for this
   in any new schema with an inline `xsd:choice`.
 
-Both patches are matched against literal text from Eclipse SUMO's
-schemas and fail the build if they stop matching, which is what should happen when
+`types/route.xsd` needed the same anonymous-choice fix, three times over,
+once `write` made it load-bearing rather than cosmetic: on the *read* side
+an unstable field name is invisible (nothing has to write it down), but
+`schema_writer` has to construct `vTypeType`'s car-following choice and
+`vehicleType`'s route/`<stop>` sequences to leave them empty, and doing that
+means naming the field. `vTypeCarFollowingGroup`,
+`vehicleRouteChoiceGroup`, and `vehicleStopGroup` hoist those three into
+named groups the same way `detGateGroup` does above.
+
+Every patch is matched against literal text from Eclipse SUMO's schemas
+and fails the build if it stops matching, which is what should happen when
 `xsd/` is re-vendored from a newer SUMO.
 
 ## Scope of the published package

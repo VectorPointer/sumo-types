@@ -52,6 +52,11 @@ const FEATURE_SCHEMAS: &[(&str, &str)] = &[
     ("additional", "additional_file.xsd"),
 ];
 
+/// The one feature in `Cargo.toml` that isn't a SUMO file format: it turns
+/// on the *serializers* for whichever formats [`FEATURE_SCHEMAS`] already
+/// selected, rather than adding a schema of its own.
+const WRITE_FEATURE: &str = "write";
+
 /// Cargo sets `CARGO_FEATURE_<NAME>` (uppercased, `-` -> `_`) for every
 /// enabled feature of the crate the build script belongs to.
 fn feature_enabled(name: &str) -> bool {
@@ -181,30 +186,31 @@ fn rename_colliding_types(content: &str) -> String {
 /// schemas, and 46 of them include `types/base.xsd` while several include
 /// `types/metadata.xsd`. Applying this blindly would silently reshape
 /// schemas that have nothing to do with `.add.xml`.
-const PER_FILE_PATCHES: &[(&str, &[(&str, &str)])] = &[(
-    "additional_file.xsd",
-    &[
-        // Cut the whole `types/metadata.xsd` subtree loose ...
-        (
-            "    <xsd:include schemaLocation=\"types/metadata.xsd\"/>\n",
-            "",
-        ),
-        // ... along with the single optional element that needed it.
-        (
-            "            <xsd:element name=\"metadata\" type=\"metadataType\" minOccurs=\"0\" maxOccurs=\"1\"/>\n",
-            "",
-        ),
-        // Give the detEntry/detExit choice a name of its own.
-        (
-            "            <xsd:choice minOccurs=\"2\" maxOccurs=\"unbounded\">\n\
+const PER_FILE_PATCHES: &[(&str, &[(&str, &str)])] = &[
+    (
+        "additional_file.xsd",
+        &[
+            // Cut the whole `types/metadata.xsd` subtree loose ...
+            (
+                "    <xsd:include schemaLocation=\"types/metadata.xsd\"/>\n",
+                "",
+            ),
+            // ... along with the single optional element that needed it.
+            (
+                "            <xsd:element name=\"metadata\" type=\"metadataType\" minOccurs=\"0\" maxOccurs=\"1\"/>\n",
+                "",
+            ),
+            // Give the detEntry/detExit choice a name of its own.
+            (
+                "            <xsd:choice minOccurs=\"2\" maxOccurs=\"unbounded\">\n\
              \x20               <xsd:element name=\"detEntry\" type=\"detEntryExitType\" minOccurs=\"1\" maxOccurs=\"unbounded\"/>\n\
              \x20               <xsd:element name=\"detExit\" type=\"detEntryExitType\" minOccurs=\"1\" maxOccurs=\"unbounded\"/>\n\
              \x20           </xsd:choice>\n",
-            "            <xsd:group ref=\"detGateGroup\" minOccurs=\"2\" maxOccurs=\"unbounded\"/>\n",
-        ),
-        (
-            "    <xsd:complexType name=\"e3DetectorType\">\n",
-            "    <xsd:group name=\"detGateGroup\">\n\
+                "            <xsd:group ref=\"detGateGroup\" minOccurs=\"2\" maxOccurs=\"unbounded\"/>\n",
+            ),
+            (
+                "    <xsd:complexType name=\"e3DetectorType\">\n",
+                "    <xsd:group name=\"detGateGroup\">\n\
              \x20       <xsd:choice>\n\
              \x20           <xsd:element name=\"detEntry\" type=\"detEntryExitType\" minOccurs=\"1\" maxOccurs=\"unbounded\"/>\n\
              \x20           <xsd:element name=\"detExit\" type=\"detEntryExitType\" minOccurs=\"1\" maxOccurs=\"unbounded\"/>\n\
@@ -212,9 +218,117 @@ const PER_FILE_PATCHES: &[(&str, &[(&str, &str)])] = &[(
              \x20   </xsd:group>\n\
              \n\
              \x20   <xsd:complexType name=\"e3DetectorType\">\n",
-        ),
-    ],
-)];
+            ),
+        ],
+    ),
+    (
+        // `types/route.xsd` has the same anonymous-choice naming problem as
+        // `additional_file.xsd`'s `e3DetectorType` above, three times over:
+        // `vTypeType`'s car-following-model choice, and `vehicleType`'s
+        // route/routeDistribution choice and its `<stop>` sequence are each
+        // wrapped in an anonymous `<xsd:sequence minOccurs="0">`, so
+        // xsd-parser names the field it produces from the same global,
+        // feature-set-dependent counter (`content_40`, `content_43`, ... —
+        // the exact digits shift with whatever else is in the same
+        // `generate()` call). `schema_writer` (built under `write`) has to
+        // construct these fields to leave them empty, so — unlike on the read
+        // side, where nothing ever had to name them — an unstable field name
+        // is no longer just a cosmetic surprise, it is source code that
+        // doesn't compile under every feature combination. Same fix as
+        // `e3DetectorType`: hoist each anonymous sequence into a named
+        // `xsd:group`, so xsd-parser derives a stable field name from the
+        // group instead.
+        "route.xsd",
+        &[
+            (
+                "            <xsd:sequence minOccurs=\"0\">\n\
+             \x20               <xsd:choice>\n\
+             \x20                   <xsd:element name=\"carFollowing-IDM\" type=\"cfIDMType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-IDMM\" type=\"cfIDMMType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-EIDM\" type=\"cfEIDMType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-Krauss\" type=\"cfKraussType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-KraussPS\" type=\"cfKraussType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-KraussOrig1\" type=\"cfKraussType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-SmartSK\" type=\"cfSmartType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-Daniel1\" type=\"cfSmartType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-PWagner2009\" type=\"cfPWagType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-BKerner\" type=\"cfBKernerType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-Wiedemann\" type=\"cfWiedemannType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-W99\" type=\"cfW99Type\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-ACC\" type=\"cfACCType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-CACC\" type=\"cfCACCType\"/>\n\
+             \x20                   <xsd:element name=\"carFollowing-CC\" type=\"cfCCType\"/>\n\
+             \x20               </xsd:choice>\n\
+             \x20               <xsd:element name=\"param\" type=\"paramType\" minOccurs=\"0\" maxOccurs=\"unbounded\"/>\n\
+             \x20           </xsd:sequence>\n",
+                "            <xsd:group ref=\"vTypeCarFollowingGroup\" minOccurs=\"0\"/>\n",
+            ),
+            (
+                "    <xsd:complexType name=\"vTypeType\">\n",
+                "    <xsd:group name=\"vTypeCarFollowingGroup\">\n\
+             \x20       <xsd:sequence>\n\
+             \x20           <xsd:choice>\n\
+             \x20               <xsd:element name=\"carFollowing-IDM\" type=\"cfIDMType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-IDMM\" type=\"cfIDMMType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-EIDM\" type=\"cfEIDMType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-Krauss\" type=\"cfKraussType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-KraussPS\" type=\"cfKraussType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-KraussOrig1\" type=\"cfKraussType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-SmartSK\" type=\"cfSmartType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-Daniel1\" type=\"cfSmartType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-PWagner2009\" type=\"cfPWagType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-BKerner\" type=\"cfBKernerType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-Wiedemann\" type=\"cfWiedemannType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-W99\" type=\"cfW99Type\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-ACC\" type=\"cfACCType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-CACC\" type=\"cfCACCType\"/>\n\
+             \x20               <xsd:element name=\"carFollowing-CC\" type=\"cfCCType\"/>\n\
+             \x20           </xsd:choice>\n\
+             \x20           <xsd:element name=\"param\" type=\"paramType\" minOccurs=\"0\" maxOccurs=\"unbounded\"/>\n\
+             \x20       </xsd:sequence>\n\
+             \x20   </xsd:group>\n\
+             \n\
+             \x20   <xsd:complexType name=\"vTypeType\">\n",
+            ),
+            (
+                "            <xsd:sequence minOccurs=\"0\">\n\
+             \x20               <xsd:choice>\n\
+             \x20                   <xsd:element name=\"route\" type=\"vehicleRouteType\"/>\n\
+             \x20                   <xsd:element name=\"routeDistribution\" type=\"vehicleRouteDistributionType\"/>\n\
+             \x20               </xsd:choice>\n\
+             \x20               <xsd:element name=\"param\" type=\"paramType\" minOccurs=\"0\" maxOccurs=\"unbounded\"/>\n\
+             \x20           </xsd:sequence>\n\
+             \x20           <xsd:sequence minOccurs=\"0\">\n\
+             \x20               <xsd:element name=\"stop\" type=\"stopType\" maxOccurs=\"unbounded\"/>\n\
+             \x20               <xsd:element name=\"param\" type=\"paramType\" minOccurs=\"0\" maxOccurs=\"unbounded\"/>\n\
+             \x20           </xsd:sequence>\n",
+                "            <xsd:group ref=\"vehicleRouteChoiceGroup\" minOccurs=\"0\"/>\n\
+             \x20           <xsd:group ref=\"vehicleStopGroup\" minOccurs=\"0\"/>\n",
+            ),
+            (
+                "    <xsd:complexType name=\"vehicleType\">\n",
+                "    <xsd:group name=\"vehicleRouteChoiceGroup\">\n\
+             \x20       <xsd:sequence>\n\
+             \x20           <xsd:choice>\n\
+             \x20               <xsd:element name=\"route\" type=\"vehicleRouteType\"/>\n\
+             \x20               <xsd:element name=\"routeDistribution\" type=\"vehicleRouteDistributionType\"/>\n\
+             \x20           </xsd:choice>\n\
+             \x20           <xsd:element name=\"param\" type=\"paramType\" minOccurs=\"0\" maxOccurs=\"unbounded\"/>\n\
+             \x20       </xsd:sequence>\n\
+             \x20   </xsd:group>\n\
+             \n\
+             \x20   <xsd:group name=\"vehicleStopGroup\">\n\
+             \x20       <xsd:sequence>\n\
+             \x20           <xsd:element name=\"stop\" type=\"stopType\" maxOccurs=\"unbounded\"/>\n\
+             \x20           <xsd:element name=\"param\" type=\"paramType\" minOccurs=\"0\" maxOccurs=\"unbounded\"/>\n\
+             \x20       </xsd:sequence>\n\
+             \x20   </xsd:group>\n\
+             \n\
+             \x20   <xsd:complexType name=\"vehicleType\">\n",
+            ),
+        ],
+    ),
+];
 
 /// Applies the [`PER_FILE_PATCHES`] registered for `file_name`. A no-op for
 /// any schema with no entry there, which is all but one of them.
@@ -471,9 +585,17 @@ fn run() -> Result<()> {
     copy_and_patch_schemas(Path::new(ORIGINAL_XSD_DIR), &patched_xsd_dir)
         .map_err(|error| format!("Failed to patch and copy XSD schemas: {error}"))?;
 
+    // Serializers are generated only under `write`, and cost roughly 40% more
+    // generated code than the deserializers alone (~84k lines vs. ~60k with
+    // every format on) — a compile-time bill readers shouldn't pay. Both
+    // directions come out of the same `generate()` call so they agree on the
+    // types they share; only the render steps differ.
     let mut config = Config::default()
         .with_naming(SumoNaming::default())
         .with_quick_xml_deserialize();
+    if feature_enabled(WRITE_FEATURE) {
+        config = config.with_quick_xml_serialize();
+    }
     config.parser.schemas = active_schemas
         .iter()
         .map(|xsd| Schema::File(patched_xsd_dir.join(xsd)))

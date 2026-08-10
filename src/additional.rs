@@ -7,6 +7,12 @@
 pub mod domain;
 pub mod reader;
 pub mod schema_mapper;
+#[cfg(feature = "write")]
+pub mod schema_writer;
+#[cfg(feature = "write")]
+pub mod writer;
 
 pub use domain::Additional;
 pub use reader::{read_additional, read_additional_from};
+#[cfg(feature = "write")]
+pub use writer::{write_additional, write_additional_to};

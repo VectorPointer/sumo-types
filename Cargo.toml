@@ -74,6 +74,14 @@ routes = []
 # Reads `.add.xml` (SUMO "additional" files) into `additional::Additional`,
 # modelling the E1/E2/E3 detector definitions. Independent of the other two.
 additional = []
+# Not a format of its own: adds a `write_*` counterpart to every enabled
+# format's `read_*` (`write_network`, `routes::write_routes`,
+# `additional::write_additional`), running the same domain <-> schema
+# pipeline backwards. Separate from `net`/`routes`/`additional` because it
+# roughly doubles `build.rs`'s generated code (serializers alongside the
+# deserializers — see `build.rs`), a compile-time cost a read-only consumer
+# shouldn't have to pay.
+write = []
 
 [dependencies]
 derive_more = { version = "2.1.1", features = ["display", "from", "as_ref"] }

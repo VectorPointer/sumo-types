@@ -23,11 +23,15 @@ jobs:
         run: cargo fmt --all --check
 
       # Every feature combination, not a hand-kept list: with three format
-      # features the combinations outgrew being enumerated by hand, and the
-      # ones that get forgotten are exactly where bugs hide (a type name that
-      # only resolves when another feature happens to be on, an intra-doc link
-      # to a gated item). `--exclude-no-default-features` skips the empty set,
-      # which is rejected on purpose — the step below covers that case.
+      # features (plus `write`) the combinations outgrew being enumerated by
+      # hand, and the ones that get forgotten are exactly where bugs hide (a
+      # type name that only resolves when another feature happens to be on,
+      # an intra-doc link to a gated item). `--exclude-no-default-features`
+      # skips the empty set; `--at-least-one-of net,routes,additional` skips
+      # every set with `write` and no format to write — both rejected on
+      # purpose (`write` alone hits the same `compile_error!` as the empty
+      # set, since it isn't `net`/`routes`/`additional` either), and both
+      # covered by the diagnostic check below instead of being compiled here.
       - uses: taiki-e/install-action@cargo-hack
 
       # `-D warnings` goes after `--`, not in RUSTFLAGS: RUSTFLAGS applies to
@@ -35,22 +39,29 @@ jobs:
       - name: Clippy
         run: >
           cargo hack --feature-powerset --exclude-no-default-features
+          --at-least-one-of net,routes,additional
           clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo hack --feature-powerset --exclude-no-default-features test
+        run: >
+          cargo hack --feature-powerset --exclude-no-default-features
+          --at-least-one-of net,routes,additional test
 
-      # The empty feature set must fail, and must fail as an ordinary rustc
-      # error naming the missing feature — not as an opaque build-script
-      # failure. Regressing that is easy and silent.
-      - name: Reject the empty feature set with a real diagnostic
+      # The empty feature set, and `write` on its own, must both fail, and
+      # both as an ordinary rustc error naming the missing feature — not as
+      # an opaque build-script failure or a confusing "function is never
+      # used" from `write_document` having no format to serve. Regressing
+      # either is easy and silent.
+      - name: Reject feature sets with no format feature, with a real diagnostic
         run: |
-          if cargo check --no-default-features 2>cargo-err.txt; then
-            echo "expected --no-default-features to fail, but it succeeded"
-            exit 1
-          fi
-          cat cargo-err.txt
-          grep -q "at least one format feature" cargo-err.txt
+          for features in "" "write"; do
+            if cargo check --no-default-features --features "$features" 2>cargo-err.txt; then
+              echo "expected --features \"$features\" to fail, but it succeeded"
+              exit 1
+            fi
+            cat cargo-err.txt
+            grep -q "at least one format feature" cargo-err.txt
+          done
 
   docs:
     name: rustdoc
@@ -69,7 +80,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: |
           cargo hack --feature-powerset --exclude-no-default-features \
-            doc --no-deps
+            --at-least-one-of net,routes,additional doc --no-deps
 
   msrv:
     name: MSRV (1.86)

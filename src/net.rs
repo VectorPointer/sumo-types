@@ -19,3 +19,9 @@ pub mod domain;
 pub mod reader;
 #[doc(hidden)]
 pub mod schema_mapper;
+#[cfg(feature = "write")]
+#[doc(hidden)]
+pub mod schema_writer;
+#[cfg(feature = "write")]
+#[doc(hidden)]
+pub mod writer;

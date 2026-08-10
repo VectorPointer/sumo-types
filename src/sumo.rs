@@ -43,6 +43,26 @@ pub(crate) fn parse_finite(raw: &str, context: &'static str) -> Result<f64> {
     Ok(value)
 }
 
+/// The inverse of [`parse_finite`]: formats a number the way SUMO's own
+/// `floatType` pattern accepts.
+///
+/// No `NaN`/infinity guard on this side — every domain value reachable from
+/// a parsed document already passed [`parse_finite`] on the way in, and a
+/// hand-built domain value with a non-finite field is a caller bug this
+/// crate has no way to see, the same way it doesn't re-validate any other
+/// domain invariant at write time.
+///
+/// `f64`'s own [`Display`](std::fmt::Display) never falls back to
+/// scientific notation the way `{:e}` would, so this is a thin, named
+/// wrapper rather than a real conversion — its purpose is the same one
+/// [`parse_finite`] serves on the read side: one place both directions of
+/// "how SUMO spells a number" live, instead of a bare `.to_string()` at
+/// every call site.
+#[cfg(feature = "write")]
+pub(crate) fn format_finite(value: f64) -> String {
+    value.to_string()
+}
+
 /// A point in the network's coordinate system (meters), with an optional
 /// `z` represented here as `0.0` by default.
 ///
@@ -106,6 +126,29 @@ impl Point {
 
         Ok(Point { x, y, z })
     }
+
+    /// Formats this point back into SUMO's `positionType` encoding — the
+    /// inverse of [`Self::parse`].
+    ///
+    /// Omits `z` when it is exactly `0.0`. [`Self::parse`] reads a
+    /// 2-coordinate position and a 3-coordinate one with `z="0"` into the
+    /// identical value, so there is no original spelling recorded to
+    /// reproduce either way — and writing `z` on every point would make a
+    /// flat, 2-D network (most of them) noisier than what `netconvert`
+    /// itself emits for the same data.
+    #[cfg(feature = "write")]
+    pub(crate) fn format(&self) -> String {
+        if self.z == 0.0 {
+            format!("{},{}", format_finite(self.x), format_finite(self.y))
+        } else {
+            format!(
+                "{},{},{}",
+                format_finite(self.x),
+                format_finite(self.y),
+                format_finite(self.z)
+            )
+        }
+    }
 }
 
 /// `Point::parse` under the generic name, for the common case where "SUMO
@@ -138,6 +181,31 @@ pub(crate) fn split_ids_opt<T: From<String>>(raw: Option<&str>) -> Vec<T> {
     raw.map(split_ids).unwrap_or_default()
 }
 
+/// The inverse of [`split_ids`]: joins a list of ids into SUMO's
+/// whitespace-separated attribute value. Never `None` — for the *required*
+/// list attributes [`split_ids`] reads (`incLanes`, `intLanes`, ...), an
+/// empty list is a legal value (a dead-end junction's `incLanes=""`), not a
+/// missing one, so the caller writes the (possibly empty) string as-is.
+///
+/// Generic over `T: AsRef<str>` rather than fixed to one id newtype, same
+/// reasoning as [`split_ids`] being generic over `T: From<String>`.
+#[cfg(feature = "write")]
+pub(crate) fn join_ids<T: AsRef<str>>(ids: &[T]) -> String {
+    ids.iter().map(AsRef::as_ref).collect::<Vec<_>>().join(" ")
+}
+
+/// [`join_ids`] for an attribute SUMO may omit entirely: `None` for an empty
+/// list, so the caller can leave the attribute out rather than writing
+/// `attr=""` — the inverse of how [`split_ids_opt`] reads a missing
+/// attribute back as an empty list. (A non-empty `raw` that splits to
+/// nothing can't happen: [`split_ids`] only ever produces `Vec::new()` from
+/// an all-whitespace string, and no writer using this helper would build one
+/// of those from anything but an already-empty list.)
+#[cfg(feature = "write")]
+pub(crate) fn join_ids_opt<T: AsRef<str>>(ids: &[T]) -> Option<String> {
+    (!ids.is_empty()).then(|| join_ids(ids))
+}
+
 /// Converts SUMO's permissive `boolType` spelling into a real `bool`.
 ///
 /// SUMO accepts ten spellings across five meanings, in both cases, plus two
@@ -159,6 +227,28 @@ pub(crate) fn parse_bool(value: crate::schema::BoolType) -> Result<bool> {
 /// depends on the attribute, so that call belongs to each format's mapper.
 pub(crate) fn parse_bool_opt(value: Option<crate::schema::BoolType>) -> Result<Option<bool>> {
     value.map(parse_bool).transpose()
+}
+
+/// The inverse of [`parse_bool`]: always the canonical `"true"`/`"false"`
+/// spelling. [`parse_bool`] accepts SUMO's nine other spellings (`"True"`,
+/// `"yes"`, `"1"`, ...) because a reader has to cope with whatever a
+/// document contains, but nothing needs a *writer* to reproduce whichever
+/// one happened to be on the way in — a `bool` doesn't remember its
+/// spelling, so there is nothing to round-trip here the way [`Point::format`]
+/// round-trips a position's coordinates.
+#[cfg(feature = "write")]
+pub(crate) fn format_bool(value: bool) -> crate::schema::BoolType {
+    if value {
+        crate::schema::BoolType::true_
+    } else {
+        crate::schema::BoolType::false_
+    }
+}
+
+/// [`format_bool`] for an attribute this crate models as `Option<bool>`.
+#[cfg(feature = "write")]
+pub(crate) fn format_bool_opt(value: Option<bool>) -> Option<crate::schema::BoolType> {
+    value.map(format_bool)
 }
 
 #[cfg(test)]
@@ -246,5 +336,63 @@ mod tests {
         assert!(parse_bool(BoolType::x).is_err());
         assert!(parse_bool(BoolType::Dash).is_err());
         assert_eq!(parse_bool_opt(None).unwrap(), None);
+    }
+
+    #[cfg(feature = "write")]
+    mod write_tests {
+        use super::*;
+
+        #[test]
+        fn formats_a_point_omitting_z_only_when_it_is_zero() {
+            assert_eq!(
+                Point {
+                    x: 1.5,
+                    y: -2.0,
+                    z: 0.0
+                }
+                .format(),
+                "1.5,-2"
+            );
+            assert_eq!(
+                Point {
+                    x: 1.5,
+                    y: -2.0,
+                    z: 3.0
+                }
+                .format(),
+                "1.5,-2,3"
+            );
+        }
+
+        #[test]
+        fn every_parsed_position_formats_back_to_an_equal_point() {
+            for raw in ["0,0", "42,7,1.5", "-1.00,-1.00"] {
+                let point = Point::parse(raw, "test").unwrap();
+                assert_eq!(Point::parse(&point.format(), "test").unwrap(), point);
+            }
+        }
+
+        #[test]
+        fn joins_and_splits_are_inverse_on_a_nonempty_list() {
+            let ids = ["a", "b", "c"];
+            assert_eq!(join_ids(&ids), "a b c");
+            assert_eq!(split_ids::<String>(&join_ids(&ids)), vec!["a", "b", "c"]);
+        }
+
+        #[test]
+        fn join_ids_opt_omits_the_attribute_for_an_empty_list() {
+            assert_eq!(join_ids_opt::<String>(&[]), None);
+            assert_eq!(join_ids_opt(&["a".to_string()]), Some("a".to_string()));
+        }
+
+        #[test]
+        fn formats_the_canonical_bool_spelling() {
+            // `BoolType` isn't `PartialEq` (it's generated, see `lib.rs`'s
+            // `mod schema` docs), so round-trip through `parse_bool` instead
+            // of comparing variants directly.
+            assert!(parse_bool(format_bool(true)).unwrap());
+            assert!(!parse_bool(format_bool(false)).unwrap());
+            assert!(format_bool_opt(None).is_none());
+        }
     }
 }

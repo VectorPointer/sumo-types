@@ -10,6 +10,10 @@
 //! | `routes` | `.rou.xml` (traffic demand) | `routes` |
 //! | `additional` | `.add.xml` (E1/E2/E3 detectors) | `additional` |
 //!
+//! A fourth feature, `write`, is not a format but a direction: it adds a
+//! `write_*` counterpart to every enabled format's `read_*`, running the
+//! same pipeline backwards. It does nothing on its own.
+//!
 //! Those are written as plain code spans, not intra-doc links, throughout
 //! this crate-level comment: it can't be `#[cfg]`-gated (a `//!` comment
 //! isn't attached to a single item), so it is rendered under every feature
@@ -184,6 +188,12 @@ pub use net::reader;
 pub use net::reader::{read_network, read_network_from};
 #[cfg(feature = "net")]
 pub use net::schema_mapper;
+#[cfg(all(feature = "net", feature = "write"))]
+pub use net::schema_writer;
+#[cfg(all(feature = "net", feature = "write"))]
+pub use net::writer;
+#[cfg(all(feature = "net", feature = "write"))]
+pub use net::writer::{write_network, write_network_to};
 
 /// `routes` format: reads `.rou.xml`. Namespaced here (rather than
 /// re-exported at the crate root like `net`) — see the crate docs.

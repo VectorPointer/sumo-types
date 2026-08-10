@@ -18,6 +18,8 @@ use crate::{Error, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+#[cfg(feature = "write")]
+use xsd_parser_types::quick_xml::{BytesDecl, SerializeSync, Writer};
 use xsd_parser_types::quick_xml::{
     DeserializeSync, Error as XmlError, Event, IoReader, XmlReader, XmlReaderSync,
 };
@@ -138,5 +140,76 @@ where
     })?;
 
     read_document::<S, T, _>(BufReader::new(file), root, what)
+        .map_err(|error| error.with_path(path))
+}
+
+/// The whole write pipeline every format's `write_*_to` runs: convert `T`
+/// (layer 2, domain) into the layer 1 schema type `S` via each format's
+/// `schema_writer`, then serialize it to `sink` rooted at `<root>`.
+///
+/// `S` is generic-bound to `TryFrom<&'v T>` rather than `From<&'v T>`: every
+/// format's conversion is fallible in the read direction (a lane's shape
+/// might not parse), and while none of today's write directions can
+/// actually fail — building a `String` from a [`uom`] quantity or an
+/// already-validated enum always succeeds — a future one plausibly could
+/// (a `SpreadType` this crate doesn't recognize, say), and `TryFrom` costs
+/// nothing extra at call sites that never see an error either way.
+///
+/// Writes SUMO's usual XML declaration ahead of the root element:
+/// [`SerializeSync::serialize`] only emits the element tree, not the
+/// `<?xml ... ?>` prologue every `.net.xml`/`.rou.xml`/`.add.xml` this crate
+/// has read starts with.
+#[cfg(feature = "write")]
+pub(crate) fn write_document<'v, S, T, W>(
+    value: &'v T,
+    root: &str,
+    what: &'static str,
+    sink: W,
+) -> Result<()>
+where
+    W: std::io::Write,
+    S: TryFrom<&'v T, Error = Error> + SerializeSync,
+    <S as SerializeSync>::Error: std::error::Error + Send + Sync + 'static,
+{
+    let raw = S::try_from(value)?;
+    let failed_to_write = |source| Error::Write {
+        what,
+        path: None,
+        source,
+    };
+
+    let mut writer = Writer::new_with_indent(sink, b' ', 4);
+    writer
+        .write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))
+        .map_err(failed_to_write)?;
+    raw.serialize(root, &mut writer)
+        .map_err(|error| Error::Serialize {
+            what,
+            source: Box::new(error),
+        })?;
+    writer.get_mut().write_all(b"\n").map_err(failed_to_write)?;
+
+    Ok(())
+}
+
+/// Creates `path` and runs [`write_document`] on it, naming the file in any
+/// error that has somewhere to put it (see `Error::with_path`).
+#[cfg(feature = "write")]
+pub(crate) fn write_document_at<'v, S, T>(
+    value: &'v T,
+    root: &str,
+    what: &'static str,
+    path: &Path,
+) -> Result<()>
+where
+    S: TryFrom<&'v T, Error = Error> + SerializeSync,
+    <S as SerializeSync>::Error: std::error::Error + Send + Sync + 'static,
+{
+    let file = File::create(path).map_err(|source| Error::Create {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    write_document::<S, T, _>(value, root, what, std::io::BufWriter::new(file))
         .map_err(|error| error.with_path(path))
 }

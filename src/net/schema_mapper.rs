@@ -12,48 +12,22 @@
 
 use super::domain::{
     Boundary, Connection, ConnectionDirection, Edge, EdgeFunction, EdgeId, Junction, JunctionId,
-    JunctionKind, Lane, LaneId, LaneIndex, LinkIndex, LinkState, Location, Network, Point,
-    Priority, Projection, Roundabout, Shape, SpreadType, TrafficLightId, TrafficLightProgram,
-    default_lane_end_offset, default_lane_width,
+    JunctionKind, Lane, LaneId, LaneIndex, LinkIndex, LinkState, Location, Network, Phase, Point,
+    Priority, Projection, Roundabout, Shape, SpreadType, TrafficLightId, TrafficLightKind,
+    TrafficLightOffset, TrafficLightProgram, default_lane_end_offset, default_lane_width,
 };
 use crate::schema;
 use crate::sumo::{parse_bool_opt, parse_finite, split_ids, split_ids_opt};
-use anyhow::{Context, Result, bail};
-use uom::si::f64::{Length, Velocity};
+use crate::{Error, Result};
+use uom::si::f64::{Length, Time, Velocity};
 use uom::si::length::meter;
+use uom::si::time::second;
 use uom::si::velocity::meter_per_second;
 
-/// Parses SUMO's `positionType` format: `"x,y"` or `"x,y,z"`.
-impl TryFrom<&str> for Point {
-    type Error = anyhow::Error;
-
-    fn try_from(raw: &str) -> Result<Self> {
-        let mut parts = raw.split(',');
-        let mut next_coord = || -> Result<f64> {
-            let part = parts
-                .next()
-                .with_context(|| format!("incomplete SUMO position: {raw:?}"))?;
-            parse_finite(part, "coordinate in SUMO position")
-        };
-
-        let x = next_coord()?;
-        let y = next_coord()?;
-        let z = match parts.next() {
-            Some(z) => parse_finite(z, "z coordinate in SUMO position")?,
-            None => 0.0,
-        };
-        if parts.next().is_some() {
-            bail!("SUMO position with too many coordinates: {raw:?}");
-        }
-
-        Ok(Point { x, y, z })
-    }
-}
-
 /// Parses SUMO's `shapeType`/`shapeTypeTwo` format: whitespace-separated
-/// positions (see the `Point` conversion above).
+/// positions (`Point`'s own `TryFrom<&str>`, in `sumo.rs`).
 impl TryFrom<&str> for Shape {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(raw: &str) -> Result<Self> {
         raw.split_whitespace()
@@ -65,16 +39,17 @@ impl TryFrom<&str> for Shape {
 
 /// Parses SUMO's `locationType` boundary format: `"minX,minY,maxX,maxY"`.
 impl TryFrom<&str> for Boundary {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(raw: &str) -> Result<Self> {
         let coords = raw
             .split(',')
             .map(|part| parse_finite(part, "SUMO boundary component"))
             .collect::<Result<Vec<_>>>()?;
-        let [min_x, min_y, max_x, max_y]: [f64; 4] = coords
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("SUMO boundary must have 4 components: {raw:?}"))?;
+        let [min_x, min_y, max_x, max_y]: [f64; 4] =
+            coords.try_into().map_err(|_| Error::InvalidBoundary {
+                value: raw.to_owned(),
+            })?;
         Ok(Boundary {
             min: (min_x, min_y),
             max: (max_x, max_y),
@@ -94,35 +69,35 @@ impl From<String> for Projection {
 }
 
 impl TryFrom<schema::LocationType> for Location {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::LocationType) -> Result<Self> {
         Ok(Location {
-            net_offset: Point::try_from(
-                value
-                    .net_offset
-                    .as_deref()
-                    .context("<location> is missing netOffset")?,
-            )?,
-            converted_boundary: Boundary::try_from(
-                value
-                    .conv_boundary
-                    .as_deref()
-                    .context("<location> is missing convBoundary")?,
-            )?,
-            original_boundary: Boundary::try_from(
-                value
-                    .orig_boundary
-                    .as_deref()
-                    .context("<location> is missing origBoundary")?,
-            )?,
+            net_offset: Point::try_from(value.net_offset.as_deref().ok_or(
+                Error::MissingAttribute {
+                    element: "location",
+                    attribute: "netOffset",
+                },
+            )?)?,
+            converted_boundary: Boundary::try_from(value.conv_boundary.as_deref().ok_or(
+                Error::MissingAttribute {
+                    element: "location",
+                    attribute: "convBoundary",
+                },
+            )?)?,
+            original_boundary: Boundary::try_from(value.orig_boundary.as_deref().ok_or(
+                Error::MissingAttribute {
+                    element: "location",
+                    attribute: "origBoundary",
+                },
+            )?)?,
             projection: Projection::from(value.proj_parameter),
         })
     }
 }
 
 impl TryFrom<schema::LaneType> for Lane {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::LaneType) -> Result<Self> {
         Ok(Lane {
@@ -168,7 +143,7 @@ impl From<schema::SpreadTypeType> for SpreadType {
 }
 
 impl TryFrom<schema::EdgeType> for Edge {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::EdgeType) -> Result<Self> {
         let lanes = value
@@ -223,7 +198,7 @@ impl From<schema::JunctionTypeType> for JunctionKind {
 }
 
 impl TryFrom<schema::JunctionType> for Junction {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::JunctionType) -> Result<Self> {
         Ok(Junction {
@@ -280,7 +255,7 @@ impl From<schema::ConnectionTypeStateType> for LinkState {
 }
 
 impl TryFrom<schema::ConnectionType> for Connection {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::ConnectionType) -> Result<Self> {
         Ok(Connection {
@@ -300,7 +275,7 @@ impl TryFrom<schema::ConnectionType> for Connection {
 }
 
 impl TryFrom<schema::RoundaboutType> for Roundabout {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::RoundaboutType) -> Result<Self> {
         Ok(Roundabout {
@@ -310,26 +285,69 @@ impl TryFrom<schema::RoundaboutType> for Roundabout {
     }
 }
 
-impl From<schema::TlLogicType> for TrafficLightProgram {
-    fn from(value: schema::TlLogicType) -> Self {
-        let phases = value
-            .content
-            .into_iter()
-            .filter_map(|content| match content {
-                schema::TlLogicTypeContent::phase(phase) => Some(phase.state),
-                _ => None,
-            })
-            .collect();
-
-        TrafficLightProgram {
-            id: TrafficLightId(value.id),
-            phases,
+impl From<schema::TlTypeType> for TrafficLightKind {
+    fn from(value: schema::TlTypeType) -> Self {
+        use schema::TlTypeType as S;
+        match value {
+            S::actuated => TrafficLightKind::Actuated,
+            S::delay_based => TrafficLightKind::DelayBased,
+            S::static_ => TrafficLightKind::Static,
+            S::NEMA => TrafficLightKind::Nema,
         }
     }
 }
 
+/// Parses `tlLogic/@offset`: a plain float (a real `xsd:float`, so no
+/// `parse_finite` — same reasoning as `Lane::speed`/`Lane::length` above) or
+/// SUMO's `"begin"` sentinel.
+impl TryFrom<schema::OffsetType> for TrafficLightOffset {
+    type Error = Error;
+
+    fn try_from(value: schema::OffsetType) -> Result<Self> {
+        match value {
+            schema::OffsetType::sumoFloatType(raw) => parse_finite(&raw, "tlLogic offset")
+                .map(|seconds| TrafficLightOffset::Fixed(Time::new::<second>(seconds))),
+            schema::OffsetType::OffsetType11(schema::OffsetType11Type::begin) => {
+                Ok(TrafficLightOffset::Begin)
+            }
+        }
+    }
+}
+
+impl From<schema::PhaseType> for Phase {
+    fn from(value: schema::PhaseType) -> Self {
+        Phase {
+            duration: Time::new::<second>(f64::from(value.duration)),
+            state: value.state,
+        }
+    }
+}
+
+impl TryFrom<schema::TlLogicType> for TrafficLightProgram {
+    type Error = Error;
+
+    fn try_from(value: schema::TlLogicType) -> Result<Self> {
+        let phases = value
+            .content
+            .into_iter()
+            .filter_map(|content| match content {
+                schema::TlLogicTypeContent::phase(phase) => Some(Phase::from(phase)),
+                _ => None,
+            })
+            .collect();
+
+        Ok(TrafficLightProgram {
+            id: TrafficLightId(value.id),
+            program_id: value.program_id,
+            kind: value.type_.map(TrafficLightKind::from),
+            offset: value.offset.map(TrafficLightOffset::try_from).transpose()?,
+            phases,
+        })
+    }
+}
+
 impl TryFrom<schema::NetType> for Network {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::NetType) -> Result<Self> {
         let content = value.content;
@@ -359,8 +377,8 @@ impl TryFrom<schema::NetType> for Network {
             traffic_light_programs: content
                 .tl_logic
                 .into_iter()
-                .map(TrafficLightProgram::from)
-                .collect(),
+                .map(TrafficLightProgram::try_from)
+                .collect::<Result<Vec<_>>>()?,
         })
     }
 }

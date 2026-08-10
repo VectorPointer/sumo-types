@@ -1,6 +1,6 @@
 [package]
 name = "sumo-types"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 # 1.86, not 1.85 (what edition 2024 alone needs): `xsd-parser` pulls in the
 # `icu_*` crates as a build-dependency, and those require 1.86. A build
@@ -20,7 +20,7 @@ readme = "README.md"
 repository = "https://github.com/VectorPointer/sumo-types"
 documentation = "https://docs.rs/sumo-types"
 # Only the schemas the implemented features need are published. The other
-# 70 under `xsd/` describe unrelated SUMO file formats (detectors, tool
+# 69 under `xsd/` describe unrelated SUMO file formats (detectors, tool
 # configurations, ...) that nothing here reads, and publishing them would
 # mean redistributing hundreds of KB of Eclipse SUMO's EPL-2.0 files for
 # nothing. They stay in the repository so adding a reader for another
@@ -35,7 +35,6 @@ include = [
     "xsd/additional_file.xsd", # additional
     "xsd/types/base.xsd",      # all three
     "README.md",
-    "CHANGELOG.md",
     "NOTICE",
     "LICENSE-APACHE",
     "LICENSE-MIT",
@@ -43,10 +42,27 @@ include = [
 ]
 
 # docs.rs builds with default features unless told otherwise, which would
-# document `net` and silently omit `routes` — half the public API.
+# document `net` alone and silently omit `routes`, `additional` and every
+# `write_*` function — most of the public API.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+# Mirrors what CI enforces (`-D warnings` on both `cargo clippy` and, via
+# `RUSTDOCFLAGS`, `cargo doc`) as the *default* lint level, so a plain
+# `cargo clippy` / `cargo doc` fails locally exactly like CI does, instead of
+# only warning and leaving the failure to be discovered at CI time. `deny`,
+# not `forbid`: item-level `#[allow(...)]` (e.g. `clippy::all` and friends on
+# the generated `schema` module in `lib.rs`) must still be able to override
+# this default — `forbid` would block that.
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+
+[lints.rustdoc]
+all = "deny"
 
 [features]
 default = ["net"]
@@ -60,14 +76,18 @@ routes = []
 additional = []
 
 [dependencies]
-anyhow = "1.0.104"
 derive_more = { version = "2.1.1", features = ["display", "from", "as_ref"] }
+# `thiserror`, not `anyhow`: this crate's `Error` is a typed enum consumers
+# can match on, and `thiserror` is a `derive`-only dependency that appears in
+# no signature — so, unlike an erased `anyhow::Error` return type, bumping it
+# is not a breaking change here. Same reasoning that keeps
+# `xsd-parser-types` out of the public API; see `src/error.rs`.
+thiserror = "2.0.20"
 uom = "0.38.0"
 xsd-parser-types = { version = "0.2.1", features = ["quick-xml"] }
 
 [build-dependencies]
 xsd-parser = "1.5.2"
-anyhow = "1.0.104"
 # Already a transitive dependency of `xsd-parser`, declared directly because
 # `SumoNaming` reimplements part of its default naming strategy (see build.rs).
 Inflector = "0.11.4"

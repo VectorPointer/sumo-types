@@ -26,16 +26,14 @@ use uom::si::f64::{Length, Time, Velocity};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Display, From, AsRef)]
 pub struct DetectorId(#[as_ref(forward)] pub String);
 
-/// A point in the network's coordinate system (meters).
-///
-/// Deliberately not `net`'s `crate::domain::Point` — see the module docs
-/// for why this format can't borrow `net`'s types.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-}
+/// A point in the network's coordinate system, re-exported at this format's
+/// own path. This *is* `net`'s `crate::domain::Point`, not a lookalike: the
+/// two used to be separate byte-identical structs only because `additional`
+/// cannot name a type from `net`, which may not be enabled, and both are now
+/// the one definition in a module that is always compiled. Unlike
+/// [`LaneRef`] below, nothing was gained by keeping them apart — see the
+/// type's own docs.
+pub use crate::sumo::Point;
 
 /// Identifier of a lane a detector sits on, in the `.net.xml` this
 /// `.add.xml` accompanies. Deliberately not `net`'s `crate::domain::LaneId`

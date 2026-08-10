@@ -4,9 +4,9 @@
 //! `net`'s own `reader`.
 
 use super::domain::Routes;
+use crate::Result;
 use crate::schema;
 use crate::xml::{read_document, read_document_at};
-use anyhow::Result;
 use std::io::BufRead;
 use std::path::Path;
 

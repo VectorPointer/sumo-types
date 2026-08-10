@@ -4,9 +4,9 @@
 //! generated schema type or depend on `xsd-parser-types` themselves.
 
 use super::domain::Network;
+use crate::Result;
 use crate::schema;
 use crate::xml::{read_document, read_document_at};
-use anyhow::Result;
 use std::io::BufRead;
 use std::path::Path;
 
@@ -15,7 +15,7 @@ use std::path::Path;
 /// ```no_run
 /// let network = sumo_types::read_network(std::path::Path::new("city.net.xml"))?;
 /// println!("{} edges", network.edges.len());
-/// # Ok::<(), anyhow::Error>(())
+/// # Ok::<(), sumo_types::Error>(())
 /// ```
 ///
 /// # Errors
@@ -41,7 +41,11 @@ pub fn read_network_from(source: impl BufRead) -> Result<Network> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{EdgeId, JunctionKind, LaneId, Projection};
+    use crate::domain::{
+        EdgeId, JunctionKind, LaneId, Projection, TrafficLightKind, TrafficLightOffset,
+    };
+    use uom::si::f64::Time;
+    use uom::si::time::second;
 
     /// Minimal `.net.xml`: one edge with one lane, joining two junctions,
     /// one of them traffic-light controlled with a two-phase program.
@@ -81,7 +85,17 @@ mod tests {
         );
 
         assert_eq!(network.traffic_light_programs.len(), 1);
-        assert_eq!(network.traffic_light_programs[0].phases, vec!["G", "r"]);
+        let program = &network.traffic_light_programs[0];
+        assert_eq!(program.program_id, "0");
+        assert_eq!(program.kind, Some(TrafficLightKind::Static));
+        assert_eq!(
+            program.offset,
+            Some(TrafficLightOffset::Fixed(Time::new::<second>(0.0)))
+        );
+        let states: Vec<&str> = program.phases.iter().map(|p| p.state.as_str()).collect();
+        assert_eq!(states, vec!["G", "r"]);
+        assert_eq!(program.phases[0].duration.get::<second>(), 42.0);
+        assert_eq!(program.phases[1].duration.get::<second>(), 3.0);
 
         assert_eq!(network.connections.len(), 1);
         assert_eq!(network.location.projection, Projection::None);
@@ -102,6 +116,16 @@ mod tests {
             .replace("</net>", "</additional>");
 
         let error = read_network_from(disguised.as_bytes()).unwrap_err();
+
+        // Matched on structurally, not by string: this is what the typed
+        // `Error` buys a consumer over an erased one (see `src/error.rs`).
+        assert!(
+            matches!(
+                &error,
+                crate::Error::WrongRoot { expected: "net", found, .. } if found == "additional"
+            ),
+            "expected a WrongRoot naming <additional>, got: {error:?}"
+        );
         assert!(
             error.to_string().contains("<additional>"),
             "error should name the offending root element, got: {error}"
@@ -111,9 +135,25 @@ mod tests {
     #[test]
     fn rejects_non_finite_coordinates() {
         let poisoned = SAMPLE_NET.replace(r#"netOffset="0.00,0.00""#, r#"netOffset="NaN,0.00""#);
-        assert!(read_network_from(poisoned.as_bytes()).is_err());
+        assert!(matches!(
+            read_network_from(poisoned.as_bytes()).unwrap_err(),
+            crate::Error::NonFiniteNumber { .. }
+        ));
 
         let poisoned = SAMPLE_NET.replace(r#"x="100.00""#, r#"x="inf""#);
-        assert!(read_network_from(poisoned.as_bytes()).is_err());
+        assert!(matches!(
+            read_network_from(poisoned.as_bytes()).unwrap_err(),
+            crate::Error::NonFiniteNumber { .. }
+        ));
+    }
+
+    #[test]
+    fn names_the_file_it_could_not_open() {
+        let error = read_network(Path::new("no/such/city.net.xml")).unwrap_err();
+
+        assert!(
+            matches!(&error, crate::Error::Open { path, .. } if path.ends_with("city.net.xml")),
+            "expected an Open error naming the path, got: {error:?}"
+        );
     }
 }

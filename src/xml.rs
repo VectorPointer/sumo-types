@@ -1,4 +1,4 @@
-//! Shared XML plumbing for every format's reader.
+//! Shared XML plumbing for every format's reader, and (under `write`) writer.
 //!
 //! xsd-parser generates deserializers for XSD *types*, not for elements, so
 //! `schema::NetType::deserialize` will happily consume a document whose root
@@ -6,14 +6,20 @@
 //! it possible to hand a `.rou.xml` (or any unrelated XML) to
 //! [`crate::read_network`] and get back a plausible-looking, empty
 //! `Network`. [`RootRecordingReader`] closes that gap.
+//!
+//! The write side has no equivalent problem — the caller names the root
+//! element it wants (`"net"`, `"routes"`, `"additional"`) up front, rather
+//! than a reader having to discover and validate it after the fact — so
+//! [`write_document`] is a straight pipeline: layer 2 (domain) to layer 1
+//! (schema) via each format's `schema_writer`, then to bytes via the
+//! generated `WithSerializer`.
 
-use anyhow::Context;
-use std::fmt::Display;
+use crate::{Error, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use xsd_parser_types::quick_xml::{
-    DeserializeSync, Error, Event, IoReader, XmlReader, XmlReaderSync,
+    DeserializeSync, Error as XmlError, Event, IoReader, XmlReader, XmlReaderSync,
 };
 
 /// Wraps an [`XmlReaderSync`] and remembers the name of the first element it
@@ -43,13 +49,13 @@ impl<R> RootRecordingReader<R> {
 }
 
 impl<R: XmlReader> XmlReader for RootRecordingReader<R> {
-    fn extend_error(&self, error: Error) -> Error {
+    fn extend_error(&self, error: XmlError) -> XmlError {
         self.inner.extend_error(error)
     }
 }
 
 impl<'a, R: XmlReaderSync<'a>> XmlReaderSync<'a> for RootRecordingReader<R> {
-    fn read_event(&mut self) -> Result<Event<'a>, Error> {
+    fn read_event(&mut self) -> Result<Event<'a>, XmlError> {
         let event = self.inner.read_event()?;
 
         if self.root.is_none() {
@@ -70,16 +76,17 @@ impl<'a, R: XmlReaderSync<'a>> XmlReaderSync<'a> for RootRecordingReader<R> {
 /// `what` names the format in the error message (`"SUMO network"`, ...).
 fn ensure_root_is<R>(
     reader: &RootRecordingReader<R>,
-    expected: &str,
-    what: &str,
-) -> anyhow::Result<()> {
+    expected: &'static str,
+    what: &'static str,
+) -> Result<()> {
     match reader.root_name() {
         Some(name) if name == expected.as_bytes() => Ok(()),
-        Some(name) => anyhow::bail!(
-            "not a {what}: expected a <{expected}> root element, found <{}>",
-            String::from_utf8_lossy(name)
-        ),
-        None => anyhow::bail!("not a {what}: the document has no root element"),
+        Some(name) => Err(Error::WrongRoot {
+            what,
+            expected,
+            found: String::from_utf8_lossy(name).into_owned(),
+        }),
+        None => Err(Error::MissingRoot { what }),
     }
 }
 
@@ -93,17 +100,20 @@ fn ensure_root_is<R>(
 ///
 /// The root check runs *after* deserializing, not before: the root name is
 /// only known once the reader has produced its first element event.
-pub(crate) fn read_document<S, T, R>(source: R, root: &str, what: &str) -> anyhow::Result<T>
+pub(crate) fn read_document<S, T, R>(source: R, root: &'static str, what: &'static str) -> Result<T>
 where
     R: BufRead,
     S: DeserializeSync<'static, RootRecordingReader<IoReader<R>>>,
-    S::Error: Display,
-    T: TryFrom<S, Error = anyhow::Error>,
+    S::Error: std::error::Error + Send + Sync + 'static,
+    T: TryFrom<S, Error = Error>,
 {
     let mut reader = RootRecordingReader::new(IoReader::new(source));
 
-    let raw = S::deserialize(&mut reader)
-        .map_err(|error| anyhow::anyhow!("failed to parse {what}: {error}"))?;
+    let raw = S::deserialize(&mut reader).map_err(|error| Error::Parse {
+        what,
+        path: None,
+        source: Box::new(error),
+    })?;
 
     ensure_root_is(&reader, root, what)?;
 
@@ -111,16 +121,22 @@ where
 }
 
 /// Opens `path` and runs [`read_document`] on it, naming the file in any
-/// error it produces.
-pub(crate) fn read_document_at<S, T>(path: &Path, root: &str, what: &str) -> anyhow::Result<T>
+/// error that has somewhere to put it (see `Error::with_path`).
+pub(crate) fn read_document_at<S, T>(
+    path: &Path,
+    root: &'static str,
+    what: &'static str,
+) -> Result<T>
 where
     S: DeserializeSync<'static, RootRecordingReader<IoReader<BufReader<File>>>>,
-    S::Error: Display,
-    T: TryFrom<S, Error = anyhow::Error>,
+    S::Error: std::error::Error + Send + Sync + 'static,
+    T: TryFrom<S, Error = Error>,
 {
-    let file = File::open(path)
-        .with_context(|| format!("Could not open input file: {}", path.display()))?;
+    let file = File::open(path).map_err(|source| Error::Open {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
     read_document::<S, T, _>(BufReader::new(file), root, what)
-        .with_context(|| format!("invalid {what} in {}", path.display()))
+        .map_err(|error| error.with_path(path))
 }

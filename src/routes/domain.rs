@@ -49,8 +49,17 @@ pub struct EdgeRef(#[as_ref(forward)] pub String);
 /// of SUMO's own source.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Color {
-    /// Each component in `0.0..=1.0`, parsed from `"r,g,b"` or `"r,g,b,a"`
-    /// (`a` defaults to `1.0` when omitted).
+    /// Components parsed from `"r,g,b"` or `"r,g,b,a"` (`a` defaults to
+    /// `1.0` when omitted), **on whichever scale the document used**.
+    ///
+    /// `colorType` accepts two numeric spellings — `0.0..=1.0` fractions
+    /// and `0..=255` integers — as two `xsd:pattern`s over the same
+    /// `xsd:string`, so nothing in the value itself says which was meant:
+    /// `"1,0,0"` is a valid red on both scales, and `"1.0,0,0"` on the
+    /// second. Reading them as one variant keeps that ambiguity where SUMO
+    /// put it instead of resolving it with a guess that would be wrong for
+    /// exactly the values where it matters. A consumer that needs
+    /// fractions can divide by 255 when any component exceeds `1.0`.
     Rgba {
         r: f64,
         g: f64,

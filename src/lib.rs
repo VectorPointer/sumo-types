@@ -2,7 +2,7 @@
 //!
 //! Each SUMO file format is its own Cargo feature, generated from that
 //! format's XSD; see `FEATURE_SCHEMAS` in `build.rs` for the current list.
-//! Two are implemented:
+//! Three are implemented:
 //!
 //! | Feature | Format | Public API |
 //! |---|---|---|
@@ -66,7 +66,7 @@
 //! ```ignore
 //! let network = sumo_types::read_network(std::path::Path::new("city.net.xml"))?;
 //! println!("{} edges", network.edges.len());
-//! # Ok::<(), anyhow::Error>(())
+//! # Ok::<(), sumo_types::Error>(())
 //! ```
 
 #[cfg(not(any(feature = "net", feature = "routes", feature = "additional")))]
@@ -129,6 +129,12 @@ mod schema {
     include!(concat!(env!("OUT_DIR"), "/generated_schema.rs"));
 }
 
+/// This crate's own error type, shared by every format. Unconditional (not
+/// gated on a format feature) so that [`Error`]'s shape doesn't shift with
+/// the consumer's feature selection.
+mod error;
+pub use error::{Error, Result};
+
 /// XML plumbing shared by every format's reader: checking that a document's
 /// root element is the one that format expects, which xsd-parser's generated
 /// deserializers don't do. Only needed when there is a reader to plumb.
@@ -136,7 +142,13 @@ mod schema {
 mod xml;
 
 /// SUMO primitives shared by every format's `schema_mapper` — how SUMO
-/// spells a boolean, encodes a number, writes a list of ids.
+/// spells a boolean, encodes a number, writes a list of ids — plus the one
+/// domain type that is genuinely common to all of them, [`sumo::Point`],
+/// re-exported at each format's own path.
+///
+/// This module is what makes that sharing possible at all: it is compiled
+/// whenever *any* format feature is on, so unlike `net`'s or `additional`'s
+/// own modules it can hold something both must be able to name.
 ///
 /// `dead_code` is allowed for the whole module because which helpers are
 /// live depends on the active feature set: `split_ids_opt` is only reached
@@ -199,3 +211,11 @@ pub use uom;
 // hand back exactly the semver lock that keeping `schema` private buys:
 // a `pub use` of a dependency makes bumping that dependency a breaking
 // change for anyone who reached it through this crate.
+//
+// `thiserror` is in the same position for the same reason, and is why this
+// crate returns its own [`Error`] rather than an erased `anyhow::Error`:
+// `thiserror` is a `derive`-only dependency that appears in no signature,
+// whereas `anyhow::Error` in every `read_*`/`write_*` return type would
+// have made `anyhow` part of this crate's API — the exact leak the
+// paragraph above exists to prevent — while giving consumers nothing to
+// match on. See `src/error.rs`.

@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Formats
 
-SUMO has one file format per Cargo feature. Two are implemented:
+SUMO has one file format per Cargo feature. Three are implemented:
 
 | Feature | Format | Public API |
 |---|---|---|
@@ -210,7 +210,6 @@ is keyed by file name for quirks specific to one schema. `routes` and
    reader function's own doc comment, where the feature gate applies
    naturally, and let the README doctests (`ReadmeExamples` in `src/lib.rs`)
    cover the cross-format story.
-
 Some schemas need a `PER_FILE_PATCHES` entry before they generate at all.
 `additional_file.xsd` needed two, both documented at that constant in
 `build.rs`:
@@ -234,8 +233,8 @@ Some schemas need a `PER_FILE_PATCHES` entry before they generate at all.
   in any new schema with an inline `xsd:choice`.
 
 Both patches are matched against literal text from Eclipse SUMO's
-schemas and fail the build if they stop matching, which is what should
-happen when `xsd/` is re-vendored from a newer SUMO.
+schemas and fail the build if they stop matching, which is what should happen when
+`xsd/` is re-vendored from a newer SUMO.
 
 ## Scope of the published package
 

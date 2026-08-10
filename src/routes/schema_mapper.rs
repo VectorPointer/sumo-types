@@ -14,8 +14,8 @@ use super::domain::{
     VehicleTypeId,
 };
 use crate::schema;
-use crate::sumo::split_ids;
-use anyhow::{Context, Result, bail};
+use crate::sumo::{parse_finite, split_ids};
+use crate::{Error, Result};
 use uom::si::f64::{Length, Time, Velocity};
 use uom::si::length::meter;
 use uom::si::time::second;
@@ -42,30 +42,30 @@ impl From<schema::ColorType6Type> for NamedColor {
     }
 }
 
-/// Parses `colorType`'s numeric form: `"r,g,b"` or `"r,g,b,a"`, each
-/// `0.0..=1.0` (`a` defaults to `1.0` when omitted).
+/// Parses `colorType`'s numeric form: `"r,g,b"` or `"r,g,b,a"` (`a` defaults
+/// to `1.0` when omitted), in either of the two scales SUMO accepts — see
+/// [`Color::Rgba`] for why they aren't told apart here.
 impl TryFrom<&str> for Color {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(raw: &str) -> Result<Self> {
         let parts = raw
             .split(',')
-            .map(|part| {
-                part.parse::<f64>()
-                    .with_context(|| format!("invalid SUMO color: {raw:?}"))
-            })
+            .map(|part| parse_finite(part, "SUMO color component"))
             .collect::<Result<Vec<_>>>()?;
 
         match *parts.as_slice() {
             [r, g, b] => Ok(Color::Rgba { r, g, b, a: 1.0 }),
             [r, g, b, a] => Ok(Color::Rgba { r, g, b, a }),
-            _ => bail!("SUMO color must have 3 or 4 components: {raw:?}"),
+            _ => Err(Error::InvalidColor {
+                value: raw.to_owned(),
+            }),
         }
     }
 }
 
 impl TryFrom<schema::ColorType> for Color {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::ColorType) -> Result<Self> {
         match value {
@@ -80,16 +80,17 @@ impl TryFrom<schema::ColorType> for Color {
 fn parse_clock_time(raw: &str) -> Result<Time> {
     let parts = raw
         .split(':')
-        .map(|part| {
-            part.parse::<f64>()
-                .with_context(|| format!("invalid SUMO clock time: {raw:?}"))
-        })
+        .map(|part| parse_finite(part, "SUMO clock time component"))
         .collect::<Result<Vec<_>>>()?;
 
     let seconds = match *parts.as_slice() {
         [h, m, s] => h * 3600.0 + m * 60.0 + s,
         [h, m, s, ms] => h * 3600.0 + m * 60.0 + s + ms / 1000.0,
-        _ => bail!("SUMO clock time must have 3 or 4 components: {raw:?}"),
+        _ => {
+            return Err(Error::InvalidClockTime {
+                value: raw.to_owned(),
+            });
+        }
     };
     Ok(Time::new::<second>(seconds))
 }
@@ -98,7 +99,7 @@ fn parse_clock_time(raw: &str) -> Result<Time> {
 /// build time (see `RENAMED_TYPES` in `build.rs`) to avoid colliding with
 /// xsd-parser's generated `TimeType` primitive.
 impl TryFrom<schema::SumoTimeType> for Time {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::SumoTimeType) -> Result<Self> {
         match value {
@@ -111,7 +112,7 @@ impl TryFrom<schema::SumoTimeType> for Time {
 }
 
 impl TryFrom<schema::DepartType> for Depart {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::DepartType) -> Result<Self> {
         match value {
@@ -130,7 +131,7 @@ impl TryFrom<schema::DepartType> for Depart {
 }
 
 impl TryFrom<schema::RouteType> for Route {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::RouteType) -> Result<Self> {
         Ok(Route {
@@ -142,7 +143,7 @@ impl TryFrom<schema::RouteType> for Route {
 }
 
 impl TryFrom<schema::VTypeType> for VehicleType {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::VTypeType) -> Result<Self> {
         Ok(VehicleType {
@@ -162,7 +163,7 @@ impl TryFrom<schema::VTypeType> for VehicleType {
 /// [`VehicleType`] (this crate's mapping of SUMO's `vType`/`vTypeType`, a
 /// vehicle *class* definition). The naming clash is SUMO's own.
 impl TryFrom<schema::VehicleType> for Vehicle {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::VehicleType) -> Result<Self> {
         Ok(Vehicle {
@@ -176,7 +177,7 @@ impl TryFrom<schema::VehicleType> for Vehicle {
 }
 
 impl TryFrom<schema::RoutesType> for Routes {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::RoutesType) -> Result<Self> {
         let mut routes = Routes::default();
@@ -244,6 +245,9 @@ mod tests {
     fn rejects_malformed_color() {
         assert!(Color::try_from("not-a-color").is_err());
         assert!(Color::try_from("1,2").is_err());
+        // A `NaN` component would poison whatever the color is blended
+        // into, the same way a `NaN` coordinate poisons a position.
+        assert!(Color::try_from("NaN,0,0").is_err());
     }
 
     #[test]
@@ -276,6 +280,7 @@ mod tests {
     fn rejects_malformed_clock_time() {
         assert!(parse_clock_time("not-a-time").is_err());
         assert!(parse_clock_time("1:02").is_err());
+        assert!(parse_clock_time("NaN:02:03").is_err());
     }
 
     #[test]

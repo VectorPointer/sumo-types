@@ -1,4 +1,17 @@
-use anyhow::{Context, Result, bail};
+/// Errors this build script can produce.
+///
+/// A boxed `std` error rather than `anyhow`: nothing here ever inspects an
+/// error — Cargo prints whatever `main` returns and stops the build — so the
+/// only thing `anyhow` was buying was `.context()`'s ergonomics, which
+/// `.map_err(|error| format!(...))?` covers in one more line per site.
+///
+/// This does *not* remove `anyhow` from the build: `xsd-parser` depends on
+/// it, so it is compiled either way. What it removes is this crate's own
+/// declared dependency on it — one fewer version to keep in step, and
+/// `[dependencies]`/`[build-dependencies]` that no longer disagree about
+/// which error crate this project uses.
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 use inflector::Inflector;
 use std::env;
 use std::fs;
@@ -221,10 +234,11 @@ fn apply_per_file_patches(file_name: &str, content: &str) -> Result<String> {
         .iter()
         .try_fold(content.to_string(), |content, (from, to)| {
             if !content.contains(from) {
-                bail!(
+                return Err(format!(
                     "patch for {file_name} no longer matches; the vendored schema must have \
                      changed. Expected to find:\n{from}"
-                );
+                )
+                .into());
             }
 
             Ok(content.replace(from, to))
@@ -409,11 +423,28 @@ fn pretty_print(code: &str) -> String {
     }
 }
 
-fn main() -> Result<()> {
+/// Prints the error with [`Display`](std::fmt::Display) and exits, rather
+/// than returning it from `main` for Cargo to render.
+///
+/// `fn main() -> Result<_, E>` formats `E` with [`Debug`], which for a boxed
+/// error built from a `String` escapes the message — the `PER_FILE_PATCHES`
+/// mismatch reports the multi-line XSD snippet it expected to find, and
+/// under `Debug` that arrives as one line full of literal `\n`, which is
+/// exactly the message where readability matters most.
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     println!("cargo:rerun-if-changed={ORIGINAL_XSD_DIR}");
 
-    let out_dir =
-        PathBuf::from(env::var("OUT_DIR").context("OUT_DIR environment variable is not set")?);
+    let out_dir = PathBuf::from(
+        env::var("OUT_DIR")
+            .map_err(|error| format!("OUT_DIR environment variable is not set: {error}"))?,
+    );
     let dest_path = out_dir.join(OUTPUT_FILE_NAME);
 
     let active_schemas: Vec<&str> = FEATURE_SCHEMAS
@@ -427,14 +458,18 @@ fn main() -> Result<()> {
     // an empty module instead and let the `compile_error!` in `lib.rs`
     // report it as an ordinary rustc diagnostic naming the missing feature.
     if active_schemas.is_empty() {
-        fs::write(&dest_path, "")
-            .with_context(|| format!("Failed to write empty schema to {}", dest_path.display()))?;
+        fs::write(&dest_path, "").map_err(|error| {
+            format!(
+                "Failed to write empty schema to {}: {error}",
+                dest_path.display()
+            )
+        })?;
         return Ok(());
     }
 
     let patched_xsd_dir = out_dir.join("patched_xsd");
     copy_and_patch_schemas(Path::new(ORIGINAL_XSD_DIR), &patched_xsd_dir)
-        .context("Failed to patch and copy XSD schemas")?;
+        .map_err(|error| format!("Failed to patch and copy XSD schemas: {error}"))?;
 
     let mut config = Config::default()
         .with_naming(SumoNaming::default())
@@ -445,10 +480,14 @@ fn main() -> Result<()> {
         .collect();
 
     let code = generate(config)
-        .map_err(|e| anyhow::anyhow!("Error generating code from XSD schema: {e:?}"))?;
+        .map_err(|error| format!("Error generating code from XSD schema: {error:?}"))?;
 
-    fs::write(&dest_path, pretty_print(&code.to_string()))
-        .with_context(|| format!("Failed to write generated file to {}", dest_path.display()))?;
+    fs::write(&dest_path, pretty_print(&code.to_string())).map_err(|error| {
+        format!(
+            "Failed to write generated file to {}: {error}",
+            dest_path.display()
+        )
+    })?;
 
     Ok(())
 }

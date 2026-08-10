@@ -4,9 +4,9 @@
 //! formats' readers.
 
 use super::domain::Additional;
+use crate::Result;
 use crate::schema;
 use crate::xml::{read_document, read_document_at};
-use anyhow::Result;
 use std::io::BufRead;
 use std::path::Path;
 

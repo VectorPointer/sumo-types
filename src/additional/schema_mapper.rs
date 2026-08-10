@@ -18,7 +18,7 @@ use super::domain::{
 };
 use crate::schema;
 use crate::sumo::{parse_bool_opt, parse_finite, split_ids};
-use anyhow::{Context, Result, bail};
+use crate::{Error, Result};
 use uom::si::f64::{Length, Time, Velocity};
 use uom::si::length::meter;
 use uom::si::time::second;
@@ -27,7 +27,7 @@ use uom::si::velocity::meter_per_second;
 /// SUMO packs "from the start" and "from the end" into the sign of one
 /// number; [`LanePosition`] splits them, so the sign is read here and
 /// nowhere else.
-fn lane_position(raw: &str, context: &str) -> Result<LanePosition> {
+fn lane_position(raw: &str, context: &'static str) -> Result<LanePosition> {
     let value = parse_finite(raw, context)?;
 
     Ok(if value < 0.0 {
@@ -37,28 +37,12 @@ fn lane_position(raw: &str, context: &str) -> Result<LanePosition> {
     })
 }
 
-/// Parses `e3Detector/@pos`, the icon position: `"x,y"` or `"x,y,z"`.
+/// Parses `e3Detector/@pos`, the icon position: `"x,y"` or `"x,y,z"`. Same
+/// encoding as every other SUMO position even though the XSD types this one
+/// attribute as a bare `xsd:string`; only the error context differs, which
+/// is what [`Point::parse`] takes over `Point`'s `TryFrom<&str>`.
 fn icon_position(raw: &str) -> Result<Point> {
-    let mut parts = raw.split(',');
-    let mut next = |what: &str| -> Result<f64> {
-        let part = parts
-            .next()
-            .with_context(|| format!("incomplete detector icon position: {raw:?}"))?;
-        parse_finite(part, what)
-    };
-
-    let x = next("detector icon position x")?;
-    let y = next("detector icon position y")?;
-    let z = match parts.next() {
-        Some(z) => parse_finite(z, "detector icon position z")?,
-        None => 0.0,
-    };
-
-    if parts.next().is_some() {
-        bail!("detector icon position with too many coordinates: {raw:?}");
-    }
-
-    Ok(Point { x, y, z })
+    Point::parse(raw, "detector icon position")
 }
 
 fn seconds(value: Option<f32>) -> Option<Time> {
@@ -76,7 +60,7 @@ fn sampling_period(period: Option<f32>, freq: Option<f32>) -> Option<Time> {
 }
 
 impl TryFrom<schema::DetEntryExitType> for DetectorGate {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::DetEntryExitType) -> Result<Self> {
         Ok(DetectorGate {
@@ -88,7 +72,7 @@ impl TryFrom<schema::DetEntryExitType> for DetectorGate {
 }
 
 impl TryFrom<schema::E1DetectorType> for E1Detector {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::E1DetectorType) -> Result<Self> {
         Ok(E1Detector {
@@ -124,12 +108,16 @@ fn lane_coverage(
     length: Option<&str>,
 ) -> Result<Option<LaneCoverage>> {
     match (lane, lanes) {
-        (Some(_), Some(_)) => {
-            bail!("e2Detector sets both `lane` and `lanes`; they are alternatives")
-        }
-        (_, Some(_)) if length.is_some() => {
-            bail!("e2Detector sets both `lanes` and `length`; SUMO's `lanes` excludes `length`")
-        }
+        (Some(_), Some(_)) => Err(Error::ConflictingAttributes {
+            element: "e2Detector",
+            first: "lane",
+            second: "lanes",
+        }),
+        (_, Some(_)) if length.is_some() => Err(Error::ConflictingAttributes {
+            element: "e2Detector",
+            first: "lanes",
+            second: "length",
+        }),
         (Some(lane), None) => Ok(Some(LaneCoverage::SingleLane(LaneRef(lane)))),
         (None, Some(lanes)) => Ok(Some(LaneCoverage::LaneChain(split_ids(lanes)))),
         (None, None) => Ok(None),
@@ -137,7 +125,7 @@ fn lane_coverage(
 }
 
 impl TryFrom<schema::E2DetectorType> for E2Detector {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::E2DetectorType) -> Result<Self> {
         Ok(E2Detector {
@@ -186,7 +174,7 @@ impl TryFrom<schema::E2DetectorType> for E2Detector {
 }
 
 impl TryFrom<schema::E3DetectorType> for E3Detector {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::E3DetectorType) -> Result<Self> {
         let mut entries = Vec::new();
@@ -230,7 +218,7 @@ impl TryFrom<schema::E3DetectorType> for E3Detector {
 }
 
 impl TryFrom<schema::AdditionalType> for Additional {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: schema::AdditionalType) -> Result<Self> {
         let mut additional = Additional::default();

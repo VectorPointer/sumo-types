@@ -12,7 +12,7 @@
 //! carried their own byte-identical copy of [`parse_finite`] and of the
 //! boolean table, free to drift apart the first time one got a fix.
 
-use anyhow::{Context, Result, bail};
+use crate::{Error, Result};
 
 /// Parses one of SUMO's text-encoded numbers, rejecting `NaN` and the
 /// infinities.
@@ -27,17 +27,97 @@ use anyhow::{Context, Result, bail};
 ///
 /// `context` names the value in the error message (`"junction x
 /// coordinate"`, ...).
-pub(crate) fn parse_finite(raw: &str, context: &str) -> Result<f64> {
-    let value: f64 = raw
-        .trim()
-        .parse()
-        .with_context(|| format!("invalid {context}: {raw:?}"))?;
+pub(crate) fn parse_finite(raw: &str, context: &'static str) -> Result<f64> {
+    let value: f64 = raw.trim().parse().map_err(|_| Error::InvalidNumber {
+        context,
+        value: raw.to_owned(),
+    })?;
 
     if !value.is_finite() {
-        bail!("non-finite {context}: {raw:?}");
+        return Err(Error::NonFiniteNumber {
+            context,
+            value: raw.to_owned(),
+        });
     }
 
     Ok(value)
+}
+
+/// A point in the network's coordinate system (meters), with an optional
+/// `z` represented here as `0.0` by default.
+///
+/// [`Default`] is the origin.
+///
+/// Shared by every format rather than defined once per format, unlike the
+/// id newtypes next to it. Those are per-format on purpose — an
+/// `additional`'s `LaneRef` and a `net`'s `LaneId` carry the same string but
+/// mean "a lane in the file I came with" and "a lane I define", and keeping
+/// them un-mixable is worth the duplication. A point has no such reading:
+/// it is a pair of meters in one coordinate system, and `net`'s and
+/// `additional`'s were byte-identical structs that only existed separately
+/// because `additional` cannot name a type from `net`, which may not be
+/// enabled. This module *is* always compiled when any format is (see
+/// `lib.rs`), so it can hold the one definition both re-export — and with
+/// it, in `Self::parse`, the single copy of how SUMO spells a position.
+/// (Plain code span, not a link: `parse` is `pub(crate)`, so an intra-doc
+/// link to it fails `rustdoc::private_intra_doc_links` under `-D warnings`.)
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl Point {
+    /// Parses SUMO's `positionType` encoding: `"x,y"` or `"x,y,z"`, with `z`
+    /// reading as `0.0` when omitted.
+    ///
+    /// Takes the `context` its errors should name (`"SUMO position"`,
+    /// `"detector icon position"`, ...), which is why this is an inherent
+    /// constructor and [`TryFrom<&str>`] below is a thin wrapper over it
+    /// rather than the other way round: the same encoding spells several
+    /// different attributes, and "invalid position" without saying *which*
+    /// is the kind of error that sends someone reading a 200 MB `.net.xml`
+    /// by hand. Crate-internal for that reason — the context argument is an
+    /// error-message detail, not something a consumer should have to pass.
+    pub(crate) fn parse(raw: &str, context: &'static str) -> Result<Self> {
+        let mut parts = raw.split(',');
+        let mut next_coordinate = || -> Result<f64> {
+            let part = parts.next().ok_or(Error::IncompletePosition {
+                context,
+                value: raw.to_owned(),
+            })?;
+            parse_finite(part, context)
+        };
+
+        let x = next_coordinate()?;
+        let y = next_coordinate()?;
+        let z = match parts.next() {
+            Some(z) => parse_finite(z, context)?,
+            None => 0.0,
+        };
+
+        if parts.next().is_some() {
+            return Err(Error::TooManyCoordinates {
+                context,
+                value: raw.to_owned(),
+            });
+        }
+
+        Ok(Point { x, y, z })
+    }
+}
+
+/// `Point::parse` under the generic name, for the common case where "SUMO
+/// position" is context enough. Lives here beside the type rather than in a
+/// format's `schema_mapper` so there is one impl of it, not one per format
+/// competing for the same `impl TryFrom<&str> for Point`.
+impl TryFrom<&str> for Point {
+    type Error = Error;
+
+    fn try_from(raw: &str) -> Result<Self> {
+        Point::parse(raw, "SUMO position")
+    }
 }
 
 /// Splits one of SUMO's whitespace-separated id lists (`incLanes`,
@@ -70,7 +150,7 @@ pub(crate) fn parse_bool(value: crate::schema::BoolType) -> Result<bool> {
     match value {
         S::true_ | S::True | S::yes | S::on | S::_1 => Ok(true),
         S::false_ | S::False | S::no | S::off | S::_0 => Ok(false),
-        S::x | S::Dash => bail!("SUMO boolean value with no binary meaning (\"x\"/\"-\")"),
+        S::x | S::Dash => Err(Error::AmbiguousBool),
     }
 }
 
@@ -99,6 +179,42 @@ mod tests {
         assert_eq!(parse_finite("12.50", "test").unwrap(), 12.5);
         assert_eq!(parse_finite("-3", "test").unwrap(), -3.0);
         assert_eq!(parse_finite("  7.0  ", "test").unwrap(), 7.0);
+    }
+
+    #[test]
+    fn parses_positions_with_and_without_z() {
+        assert_eq!(
+            Point::parse("42,7", "test").unwrap(),
+            Point {
+                x: 42.0,
+                y: 7.0,
+                z: 0.0
+            }
+        );
+        assert_eq!(
+            Point::parse("42,7,1.5", "test").unwrap(),
+            Point {
+                x: 42.0,
+                y: 7.0,
+                z: 1.5
+            }
+        );
+        assert_eq!(
+            Point::parse("-1.00,-1.00", "test").unwrap(),
+            Point {
+                x: -1.0,
+                y: -1.0,
+                z: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_positions_of_the_wrong_shape_or_with_poisoned_coordinates() {
+        assert!(Point::parse("42", "test").is_err());
+        assert!(Point::parse("42,7,1,9", "test").is_err());
+        assert!(Point::parse("NaN,7", "test").is_err());
+        assert!(Point::parse("42,inf", "test").is_err());
     }
 
     #[test]

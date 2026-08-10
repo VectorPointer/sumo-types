@@ -64,12 +64,51 @@ impl TryFrom<&str> for Color {
     }
 }
 
+/// Matches a raw color string against SUMO's named-color spellings,
+/// independent of `schema::ColorType6Type`'s own enum matching — see the
+/// `TryFrom<schema::ColorType> for Color` impl below for why this crate
+/// can't just rely on that instead.
+fn named_color(raw: &str) -> Option<NamedColor> {
+    Some(match raw {
+        "red" => NamedColor::Red,
+        "green" => NamedColor::Green,
+        "blue" => NamedColor::Blue,
+        "yellow" => NamedColor::Yellow,
+        "cyan" => NamedColor::Cyan,
+        "magenta" => NamedColor::Magenta,
+        "orange" => NamedColor::Orange,
+        "white" => NamedColor::White,
+        "black" => NamedColor::Black,
+        "grey" | "gray" => NamedColor::Grey,
+        "invisible" => NamedColor::Invisible,
+        "random" => NamedColor::Random,
+        _ => return None,
+    })
+}
+
 impl TryFrom<schema::ColorType> for Color {
     type Error = Error;
 
+    /// `colorType`'s `xsd:union` declares its numeric member
+    /// (`ColorType4Type`) before its named-color one (`ColorType6Type`),
+    /// and xsd-parser's generated `DeserializeBytes for ColorType` tries
+    /// union members in that same declaration order — but `ColorType4Type`
+    /// is `types/base.xsd`'s `xsd:string`-restricted-by-pattern numeric
+    /// form rendered as a bare, unpatterned `String` (same reason
+    /// `floatType` arrives as text for [`crate::sumo::parse_finite`] to
+    /// validate: xsd-parser doesn't enforce `xsd:pattern`). A bare `String`
+    /// deserializes successfully from *any* text, so the union always
+    /// resolves to `ColorType4`, even for `color="grey"` — `ColorType6`
+    /// (the proper, pattern-checked enum) is never actually reached. Every
+    /// `ColorType4(raw)` is therefore checked against the named spellings
+    /// here before falling back to numeric parsing, recovering the
+    /// distinction the generated union deserializer can't make.
     fn try_from(value: schema::ColorType) -> Result<Self> {
         match value {
-            schema::ColorType::ColorType4(raw) => Color::try_from(raw.as_str()),
+            schema::ColorType::ColorType4(raw) => match named_color(&raw) {
+                Some(named) => Ok(Color::Named(named)),
+                None => Color::try_from(raw.as_str()),
+            },
             schema::ColorType::ColorType6(named) => Ok(Color::Named(NamedColor::from(named))),
         }
     }
@@ -111,10 +150,40 @@ impl TryFrom<schema::SumoTimeType> for Time {
     }
 }
 
+/// Matches a raw `sumoTimeType`/`SumoTimeType9` string against
+/// `departType`'s trigger keywords, independent of `DepartType13Type`'s own
+/// enum matching — see the `TryFrom<schema::DepartType> for Depart` impl
+/// below for why this crate can't just rely on that instead.
+fn depart_trigger(raw: &str) -> Option<Depart> {
+    Some(match raw {
+        "triggered" => Depart::Triggered,
+        "containerTriggered" => Depart::ContainerTriggered,
+        "split" => Depart::Split,
+        "begin" => Depart::Begin,
+        _ => return None,
+    })
+}
+
 impl TryFrom<schema::DepartType> for Depart {
     type Error = Error;
 
+    /// Same union-priority problem as `colorType`'s conversion above, one
+    /// level deeper: `departType`'s first member, `sumoTimeType`
+    /// (`timeType`), is itself a union whose second member
+    /// (`SumoTimeType9`, `timeType`'s `"H:M:S"` text pattern) is an
+    /// unpatterned `String` — so it absorbs `"triggered"`, `"begin"`, and
+    /// the rest of `DepartType13Type`'s keywords before the outer union
+    /// ever reaches that branch. Every `SumoTimeType9(raw)` is checked
+    /// against those keywords via [`depart_trigger`] first, and only handed
+    /// to [`Time`]'s own conversion (as clock-time text) when it doesn't
+    /// match one.
     fn try_from(value: schema::DepartType) -> Result<Self> {
+        if let schema::DepartType::sumoTimeType(schema::SumoTimeType::SumoTimeType9(raw)) = &value {
+            if let Some(depart) = depart_trigger(raw) {
+                return Ok(depart);
+            }
+        }
+
         match value {
             schema::DepartType::sumoTimeType(time) => Ok(Depart::Time(Time::try_from(time)?)),
             schema::DepartType::DepartType13(trigger) => {
@@ -212,6 +281,35 @@ impl TryFrom<schema::RoutesType> for Routes {
 mod tests {
     use super::*;
     use crate::routes::domain::EdgeRef;
+
+    #[test]
+    fn reads_depart_triggers_even_though_the_union_always_offers_them_as_clock_time_text_first() {
+        // Same regression shape as the named-color test below, one union
+        // level deeper: `sumoTimeType`'s own `SumoTimeType9` text-pattern
+        // member is what actually absorbs `"begin"` et al. before
+        // `DepartType13` is ever reached.
+        let raw = schema::DepartType::sumoTimeType(schema::SumoTimeType::SumoTimeType9(
+            "begin".to_string(),
+        ));
+        assert!(matches!(Depart::try_from(raw).unwrap(), Depart::Begin));
+    }
+
+    #[test]
+    fn reads_a_named_color_even_though_the_union_always_offers_it_as_color_type_4_first() {
+        // Regression test: `schema::ColorType`'s generated union
+        // deserializer always resolves to `ColorType4` (an unpatterned
+        // `String`, so it "matches" anything) and never actually reaches
+        // `ColorType6`, even for a real named color — see the `TryFrom`
+        // impl's own doc comment. Exercise the full path a real `.rou.xml`
+        // takes, not just the enum conversion directly.
+        for raw in ["red", "grey", "gray", "invisible", "random"] {
+            let color = Color::try_from(schema::ColorType::ColorType4(raw.to_string())).unwrap();
+            assert!(
+                matches!(color, Color::Named(_)),
+                "{raw:?} should read as a named color, got {color:?}"
+            );
+        }
+    }
 
     #[test]
     fn parses_numeric_rgb_color_defaulting_alpha() {

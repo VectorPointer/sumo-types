@@ -1,4 +1,5 @@
-//! Reads [SUMO](https://sumo.dlr.de/) files into well-typed Rust structs.
+//! Reads — and, with the `write` feature, writes — [SUMO](https://sumo.dlr.de/)
+//! files as well-typed Rust structs.
 //!
 //! Each SUMO file format is its own Cargo feature, generated from that
 //! format's XSD; see `FEATURE_SCHEMAS` in `build.rs` for the current list.

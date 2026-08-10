@@ -8,7 +8,7 @@ edition = "2024"
 # the floor just as a regular one would. Verified in CI.
 rust-version = "1.86"
 authors = ["Víctor Ariño Pellejero"]
-description = "Reads SUMO (Eclipse SUMO) .net.xml, .rou.xml and .add.xml files into well-typed Rust structs"
+description = "Reads and writes SUMO (Eclipse SUMO) .net.xml, .rou.xml and .add.xml files as well-typed Rust structs"
 keywords = ["sumo", "traffic", "simulation", "netconvert", "xml"]
 categories = ["parser-implementations", "science"]
 # `MIT OR Apache-2.0` covers this crate's own code; the `AND EPL-2.0` covers

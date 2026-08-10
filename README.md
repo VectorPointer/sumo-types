@@ -1,6 +1,7 @@
 # sumo-types
 
-Reads [SUMO](https://sumo.dlr.de/) files into well-typed Rust structs.
+Reads — and, with the `write` feature, writes — [SUMO](https://sumo.dlr.de/)
+files as well-typed Rust structs.
 
 At the time of writing there is no other Rust crate that does this:
 [`traci-rs`](https://crates.io/crates/traci-rs) speaks the TraCI protocol to

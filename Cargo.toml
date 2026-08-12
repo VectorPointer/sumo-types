@@ -1,6 +1,6 @@
 [package]
 name = "sumo-types"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 # 1.86, not 1.85 (what edition 2024 alone needs): `xsd-parser` pulls in the
 # `icu_*` crates as a build-dependency, and those require 1.86. A build

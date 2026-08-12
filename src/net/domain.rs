@@ -202,7 +202,7 @@ pub struct Junction {
 
 /// Turning direction of a connection, following SUMO's convention
 /// (`SUMOXMLDefinitions::LinkDirection`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ConnectionDirection {
     Straight,
     Turn,
